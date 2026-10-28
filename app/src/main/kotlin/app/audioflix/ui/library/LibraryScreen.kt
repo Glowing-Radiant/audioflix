@@ -1,23 +1,19 @@
 package app.audioflix.ui.library
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -37,6 +33,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.audioflix.data.DownloadStatus
 import app.audioflix.data.LibraryItemWithTracks
 import app.audioflix.player.PlayerUiState
+import app.audioflix.ui.DropdownSelector
 import app.audioflix.ui.browse.Loading
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -55,21 +52,17 @@ fun LibraryScreen(
         !state.loaded -> Loading()
         state.isEmpty -> EmptyLibrary(onBrowse)
         else -> {
-          Row(
-            Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-          ) {
-            LibraryFilter.entries.forEach { f ->
-              FilterChip(
-                selected = state.filter == f,
-                onClick = { viewModel.setFilter(f) },
-                label = { Text(f.label) },
-              )
-            }
-          }
+          DropdownSelector(
+            label = "Filter",
+            options = LibraryFilter.entries,
+            selected = state.filter,
+            optionLabel = { it.label },
+            onSelect = viewModel::setFilter,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+          )
           if (state.items.isEmpty()) {
             Text(
-              "Nothing in ${state.filter.label.lowercase()}.",
+              "No titles match \"${state.filter.label}\".",
               modifier = Modifier.padding(16.dp),
               style = MaterialTheme.typography.bodyLarge,
             )

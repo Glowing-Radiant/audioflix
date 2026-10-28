@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Forward30
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -181,11 +182,13 @@ private fun SpeedButton(speed: Float, onSelect: (Float) -> Unit) {
     DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
       speeds.forEach { s ->
         DropdownMenuItem(
-          text = { Text(if (s == speed) "${speedLabel(s)} (current)" else speedLabel(s)) },
+          text = { Text(speedLabel(s)) },
+          leadingIcon = if (s == speed) ({ Icon(Icons.Filled.Check, contentDescription = null) }) else null,
           onClick = {
             onSelect(s)
             open = false
           },
+          modifier = if (s == speed) Modifier.semantics { stateDescription = "Current" } else Modifier,
         )
       }
     }

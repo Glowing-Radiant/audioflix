@@ -31,11 +31,9 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarResult
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -59,6 +57,7 @@ import app.audioflix.data.DownloadStatus
 import app.audioflix.data.LibraryItemWithTracks
 import app.audioflix.provider.CatalogItem
 import app.audioflix.provider.MediaKind
+import app.audioflix.ui.DropdownSelector
 import app.audioflix.ui.LocalSnackbar
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -93,11 +92,14 @@ fun BrowseScreen(
     topBar = { TopAppBar(title = { Text("Browse ${viewModel.provider.displayName}") }) },
   ) { padding ->
     Column(Modifier.padding(padding).fillMaxSize()) {
-      PrimaryTabRow(selectedTabIndex = tab.ordinal) {
-        BrowseTab.entries.forEach { t ->
-          Tab(selected = tab == t, onClick = { viewModel.selectTab(t) }, text = { Text(t.label) })
-        }
-      }
+      DropdownSelector(
+        label = "Category",
+        options = BrowseTab.entries,
+        selected = tab,
+        optionLabel = { it.label },
+        onSelect = viewModel::selectTab,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+      )
       val onItemClick: (CatalogItem) -> Unit = { item ->
         if (library[item.key] != null) onOpenItem(item.key) else selected = item
       }
