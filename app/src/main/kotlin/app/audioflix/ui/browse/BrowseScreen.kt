@@ -374,7 +374,13 @@ private fun SummarySection(state: SummaryState, onFetch: () -> Unit) {
         state.summary.description?.let {
           Text(it.replaceFirstChar(Char::uppercase), style = MaterialTheme.typography.titleSmall)
         }
-        Text(state.summary.extract)
+        val plot = state.summary.plot
+        if (plot != null) {
+          state.summary.plotHeading?.let { Text(it, style = MaterialTheme.typography.labelLarge) }
+          Text(plot)
+        } else {
+          Text(state.summary.extract)
+        }
         Text("From Wikipedia: ${state.summary.articleTitle}", style = MaterialTheme.typography.bodySmall)
       }
       SummaryState.NotFound -> Text("Wikipedia has no article that matches this title.")

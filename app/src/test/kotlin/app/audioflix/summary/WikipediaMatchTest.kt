@@ -66,4 +66,45 @@ class WikipediaMatchTest {
 
     assertNull(bestSummary(json, TitleQuery("Oppenheimer", 2023, MediaKind.MOVIE)))
   }
+
+  @Test fun picksPlotForFilmsAndPremiseForShows() {
+    val json = """
+      {"parse": {"sections": [
+        {"line": "Synopsis", "index": "T-1"},
+        {"line": "<i>Plot</i>", "index": "1"},
+        {"line": "Premise", "index": "2"},
+        {"line": "Cast", "index": "3"}
+      ]}}
+    """.trimIndent()
+
+    assertEquals(PlotSection("1", "Plot"), plotSection(json, MediaKind.MOVIE))
+    assertEquals(PlotSection("2", "Premise"), plotSection(json, MediaKind.SHOW))
+    assertNull(plotSection("""{"parse": {"sections": [{"line": "Cast", "index": "1"}]}}""", null))
+    assertNull(plotSection("""{"error": {"code": "missingtitle"}}""", null))
+  }
+
+  @Test fun readsSectionParagraphsWithoutFootnotes() {
+    val html = "<div><h2>Plot</h2><p>Neo meets Trinity.<sup class=\\\"reference\\\">[1]</sup> </p><p></p><p>He wakes up.</p></div>"
+    val json = """{"parse": {"text": "$html"}}"""
+
+    assertEquals(listOf("Neo meets Trinity.", "He wakes up."), plotParagraphs(json))
+  }
+
+  @Test fun keepsTheOpeningSentencesOfThePlot() {
+    val first = "In the 1930s, J. Robert Oppenheimer teaches at Berkeley. Dr. Lawrence warns him. He moves to the U.S. Army project."
+    assertEquals(
+      listOf("In the 1930s, J. Robert Oppenheimer teaches at Berkeley.", "Dr. Lawrence warns him.", "He moves to the U.S. Army project."),
+      splitSentences(first),
+    )
+
+    // A short first paragraph continues into the second, up to four sentences.
+    assertEquals(
+      "$first It begins. It ends.".substringBefore(" It ends."),
+      condensePlot(listOf(first, "It begins. It ends. Credits roll.")),
+    )
+    // A long first paragraph is enough on its own.
+    val long = "A".repeat(300) + " is long."
+    assertEquals(long, condensePlot(listOf(long, "Spoiler.")))
+    assertNull(condensePlot(emptyList()))
+  }
 }

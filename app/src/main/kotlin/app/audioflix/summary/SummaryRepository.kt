@@ -20,6 +20,8 @@ class SummaryRepository(private val dir: File, private val wikipedia: WikipediaC
     runCatching { json.decodeFromString<TitleSummary>(file.readText()) }
       .onFailure { file.delete() }
       .getOrNull()
+      // Summaries saved before plots were added are looked up again.
+      ?.takeIf { it.version >= SUMMARY_VERSION }
       ?.also { memory[item.key] = it }
   }
 

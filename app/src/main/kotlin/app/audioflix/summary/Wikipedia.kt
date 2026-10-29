@@ -11,6 +11,7 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.jsoup.Jsoup
 
 /** A short Wikipedia summary of a film or show. */
 @Serializable
@@ -21,11 +22,36 @@ data class TitleSummary(
   /** The first few sentences of the article. */
   val extract: String,
   val url: String?,
+  /** The opening of the article's Plot or Premise section, when it has one. */
+  val plot: String? = null,
+  /** That section's name, e.g. "Plot" or "Premise". */
+  val plotHeading: String? = null,
+  /** Bumped when summaries change shape, so older cached ones are looked up again. */
+  val version: Int = 1,
 )
 
-/** Finds the English Wikipedia article for a title and returns the start of its introduction. */
+internal const val SUMMARY_VERSION = 2
+
+/**
+ * Finds the English Wikipedia article for a title and summarises it from the start of its Plot or
+ * Premise section, falling back to the start of its introduction.
+ */
 class WikipediaClient(private val http: OkHttpClient) {
   suspend fun lookup(query: TitleQuery): TitleSummary? {
+    val article = findArticle(query) ?: return null
+    val plot = plotOf(article.articleTitle, query.kind)
+    return article.copy(plot = plot?.second, plotHeading = plot?.first, version = SUMMARY_VERSION)
+  }
+
+  /** The (heading, condensed text) of the article's plot section, or null when it has none. */
+  private suspend fun plotOf(title: String, kind: MediaKind?): Pair<String, String>? {
+    val section = plotSection(get(parseUrl(title).addQueryParameter("prop", "sections")), kind) ?: return null
+    val html = get(parseUrl(title).addQueryParameter("prop", "text").addQueryParameter("section", section.index))
+    val text = condensePlot(plotParagraphs(html)) ?: return null
+    return section.heading to text
+  }
+
+  private suspend fun findArticle(query: TitleQuery): TitleSummary? {
     if (query.name.isBlank()) return null
     // Likely article names first ("Oppenheimer (film)"); search only when none of them fits.
     val direct = get(baseUrl().addQueryParameter("titles", candidateTitles(query).joinToString("|")))
@@ -57,6 +83,15 @@ class WikipediaClient(private val http: OkHttpClient) {
     .addQueryParameter("explaintext", "1")
     .addQueryParameter("exsentences", "3")
     .addQueryParameter("exlimit", "max")
+
+  private fun parseUrl(title: String): HttpUrl.Builder = API.toHttpUrl().newBuilder()
+    .addQueryParameter("action", "parse")
+    .addQueryParameter("format", "json")
+    .addQueryParameter("formatversion", "2")
+    .addQueryParameter("redirects", "1")
+    .addQueryParameter("page", title)
+    .addQueryParameter("disableeditsection", "1")
+    .addQueryParameter("disablelimitreport", "1")
 
   private suspend fun get(url: HttpUrl.Builder): String =
     http.newCall(Request.Builder().url(url.build()).build()).await().use { response ->
@@ -157,3 +192,78 @@ private fun normalize(text: String): String =
     .replace(Regex("""[^\p{L}\p{N}]+"""), " ")
     .trim()
     .removePrefix("the ")
+
+// The plot section --------------------------------------------------------------------------
+
+internal data class PlotSection(val index: String, val heading: String)
+
+@Serializable
+private data class ParseResponse(val parse: ParseResult? = null)
+
+@Serializable
+private data class ParseResult(val sections: List<WikiSection> = emptyList(), val text: String? = null)
+
+@Serializable
+private data class WikiSection(val line: String, val index: String)
+
+/** Section names that tell the story, most useful first. */
+private fun plotHeadings(kind: MediaKind?): List<String> = when (kind) {
+  MediaKind.SHOW -> listOf("premise", "synopsis", "plot", "plot summary", "overview")
+  else -> listOf("plot", "plot summary", "synopsis", "premise", "story")
+}
+
+/** Picks the Plot, Premise or Synopsis section from a `prop=sections` parse response. */
+internal fun plotSection(responseJson: String, kind: MediaKind?): PlotSection? {
+  val sections = json.decodeFromString<ParseResponse>(responseJson).parse?.sections.orEmpty()
+    // Sections pulled in from templates have indexes like "T-1" and can't be fetched by number.
+    .filter { it.index.all(Char::isDigit) }
+    .map { PlotSection(it.index, it.line.replace(Regex("<[^>]+>"), "").trim()) }
+  return plotHeadings(kind).firstNotNullOfOrNull { wanted ->
+    sections.firstOrNull { it.heading.lowercase() == wanted }
+  }
+}
+
+/** The paragraphs of a `prop=text` parse response, without footnote markers. */
+internal fun plotParagraphs(responseJson: String): List<String> {
+  val html = json.decodeFromString<ParseResponse>(responseJson).parse?.text ?: return emptyList()
+  val doc = Jsoup.parse(html)
+  doc.select("sup, style, table, .hatnote, .mw-editsection, .mw-empty-elt").remove()
+  return doc.select("p").map { it.text().trim() }.filter { it.isNotEmpty() }
+}
+
+/**
+ * The first few sentences of the plot: enough to say what it's about, stopping before the later
+ * paragraphs where the spoilers are.
+ */
+internal fun condensePlot(paragraphs: List<String>, maxSentences: Int = 4, enoughChars: Int = 250): String? {
+  val sentences = mutableListOf<String>()
+  for (paragraph in paragraphs.take(2)) {
+    for (sentence in splitSentences(paragraph)) {
+      if (sentences.size >= maxSentences) break
+      sentences += sentence
+    }
+    if (sentences.size >= maxSentences || sentences.sumOf { it.length } >= enoughChars) break
+  }
+  return sentences.joinToString(" ").takeIf { it.isNotBlank() }
+}
+
+private val sentenceEnd = Regex("""[.!?]["\u201D\u2019)\]]*\s+(?=["\u201C\u2018(\[]?[A-Z0-9])""")
+private val abbreviations = setOf("mr", "mrs", "ms", "dr", "st", "jr", "sr", "lt", "gen", "col", "capt", "sgt", "prof", "vs", "no", "u.s", "u.k")
+
+/** Splits prose into sentences without breaking after initials ("J. Robert") or "Dr.". */
+internal fun splitSentences(text: String): List<String> {
+  val sentences = mutableListOf<String>()
+  var start = 0
+  for (match in sentenceEnd.findAll(text)) {
+    val end = match.range.first + match.value.trimEnd().length
+    val candidate = text.substring(start, end)
+    if (match.value.startsWith(".")) {
+      val lastWord = candidate.trimEnd('.', '"', '\u201D', '\u2019', ')', ']').substringAfterLast(' ').lowercase()
+      if ((lastWord.length == 1 && lastWord[0].isLetter()) || lastWord in abbreviations) continue
+    }
+    sentences += candidate.trim()
+    start = match.range.last + 1
+  }
+  text.substring(start).trim().takeIf { it.isNotEmpty() }?.let(sentences::add)
+  return sentences
+}

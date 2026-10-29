@@ -12,7 +12,7 @@ the code changed. `scripts/release.sh` turns Unreleased into the new version's s
 ### Added
 - The Library filter and the Browse category can be changed from TalkBack's actions menu, without opening the list.
 - Browse results have Download and View summary actions in TalkBack's actions menu. Activating a title still opens its details first.
-- Title details in Browse can show a short summary from Wikipedia. Summaries are saved on the phone, so each title is looked up only once.
+- Title details in Browse can show a short summary from Wikipedia: the first few sentences of the film's plot or the show's premise, so it says what happens without giving away the ending. Summaries are saved on the phone, so each title is looked up only once.
 - AudioFlix keeps to AudioVault's limit of 25 downloads a day. Title details and the Account screen say how many are left and, once they're used up, when the next one is available.
 - The Account screen links to AudioVault's support page and Discord.
 
