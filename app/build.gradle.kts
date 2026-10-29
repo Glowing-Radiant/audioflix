@@ -42,6 +42,14 @@ android {
   }
 
   signingConfigs {
+    // A shared debug key, so AudioFlix Dev builds from CI and from any machine update each other.
+    // It only ever signs app.audioflix.debug; releases use the key from the secrets below.
+    getByName("debug") {
+      storeFile = file("debug.keystore")
+      storePassword = "android"
+      keyAlias = "androiddebugkey"
+      keyPassword = "android"
+    }
     val storeFile = signingValue("RELEASE_KEYSTORE_FILE", "storeFile")
     if (storeFile != null) {
       create("release") {
