@@ -5,6 +5,7 @@ import android.content.Context
 import app.audioflix.data.LibraryDatabase
 import app.audioflix.data.LibraryRepository
 import app.audioflix.data.Settings
+import app.audioflix.download.DownloadQuota
 import app.audioflix.net.PersistentCookieJar
 import app.audioflix.net.createApiClient
 import app.audioflix.net.createHttpClient
@@ -43,7 +44,7 @@ class AppContainer(context: Context) {
 
   val settings = Settings(prefs)
   val database = LibraryDatabase.create(context)
-  val library = LibraryRepository(context, database.libraryDao(), settings)
+  val library = LibraryRepository(context, database.libraryDao(), settings, DownloadQuota(prefs))
 
   val providers = ProviderRegistry(
     listOf(AudioVaultProvider(httpClient, cookieJar, prefs)),

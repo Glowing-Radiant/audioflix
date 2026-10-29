@@ -10,6 +10,7 @@ import app.audioflix.provider.CatalogSection
 import app.audioflix.provider.DownloadStream
 import app.audioflix.provider.LoginResult
 import app.audioflix.provider.MediaKind
+import app.audioflix.provider.ProviderLink
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,6 +41,15 @@ class AudioVaultProvider(
   override val supportedKinds = listOf(MediaKind.MOVIE, MediaKind.SHOW)
   override val requiresLogin = true
   override val signUpUrl = "$BASE_URL/register"
+
+  // AudioVault allows 25 downloads a day per account.
+  override val dailyDownloadLimit = 25
+
+  // The links AudioVault's own home page offers.
+  override val supportLinks = listOf(
+    ProviderLink("Support The AudioVault", "https://www.paypal.me/audiodescribed"),
+    ProviderLink("Join AudioVault on Discord", "https://discord.gg/sZ2PqF8"),
+  )
 
   private val _account = MutableStateFlow(prefs.getString(KEY_ACCOUNT, null))
   override val account: StateFlow<String?> = _account.asStateFlow()

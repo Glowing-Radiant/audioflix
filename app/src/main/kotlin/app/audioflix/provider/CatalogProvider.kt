@@ -24,6 +24,9 @@ data class CatalogPage(val items: List<CatalogItem>, val page: Int, val hasNext:
 
 data class CatalogSection(val title: String, val items: List<CatalogItem>)
 
+/** A link to the people behind a provider, such as a donation page or community chat. */
+data class ProviderLink(val label: String, val url: String)
+
 sealed interface LoginResult {
   data object Success : LoginResult
   data object InvalidCredentials : LoginResult
@@ -64,6 +67,12 @@ interface CatalogProvider {
 
   /** Where users can create an account, if the provider has accounts. */
   val signUpUrl: String?
+
+  /** How many new downloads the provider allows in a day, or null for no limit. */
+  val dailyDownloadLimit: Int? get() = null
+
+  /** Ways to support or reach the provider, shown on the Account screen. */
+  val supportLinks: List<ProviderLink> get() = emptyList()
 
   /** Signed-in account name (e.g. email), or null when signed out. */
   val account: StateFlow<String?>

@@ -3,7 +3,9 @@ package app.audioflix.ui.browse
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.audioflix.AppContainer
+import app.audioflix.data.DownloadResult
 import app.audioflix.data.LibraryItemWithTracks
+import app.audioflix.download.QuotaStatus
 import app.audioflix.provider.CatalogItem
 import app.audioflix.provider.CatalogProvider
 import app.audioflix.provider.CatalogSection
@@ -55,6 +57,7 @@ data class ItemSummary(val itemKey: String, val state: SummaryState)
 sealed interface BrowseEvent {
   data class NeedsSignIn(val providerName: String) : BrowseEvent
   data class Queued(val title: String) : BrowseEvent
+  data class LimitReached(val providerName: String, val status: QuotaStatus) : BrowseEvent
 }
 
 class BrowseViewModel(private val container: AppContainer) : ViewModel() {
@@ -152,35 +155,50 @@ class BrowseViewModel(private val container: AppContainer) : ViewModel() {
         _events.send(BrowseEvent.NeedsSignIn(provider.displayName))
         return@launch
       }
-      container.library.download(item)
-      _events.send(BrowseEvent.Queued(item.title))
+      when (val result = container.library.download(item, provider.dailyDownloadLimit)) {
+        DownloadResult.Queued -> _events.send(BrowseEvent.Queued(item.title))
+        is DownloadResult.LimitReached ->
+          _events.send(BrowseEvent.LimitReached(provider.displayName, result.status))
+      }
     }
   }
 
-  /** Shows the cached summary for [item], if there is one, when its details popup opens. */
-  fun showSummary(item: CatalogItem) {
+  /** Changes whenever a download is counted against the daily limit. */
+  val quotaChanges = container.library.quota.changes
+
+  /** Today's allowance for the provider, or null when it has no limit. */
+  fun quota(): QuotaStatus? = provider.dailyDownloadLimit?.let { container.library.quota.status(provider.id, it) }
+
+  /**
+   * Shows the cached summary for [item] when its details popup opens. Without one, [fetch] looks it
+   * up on Wikipedia right away instead of waiting for the button.
+   */
+  fun showSummary(item: CatalogItem, fetch: Boolean = false) {
     summaryJob?.cancel()
-    _summary.value = ItemSummary(item.key, SummaryState.NotLoaded)
+    _summary.value = ItemSummary(item.key, if (fetch) SummaryState.Loading else SummaryState.NotLoaded)
     summaryJob = viewModelScope.launch {
-      container.summaries.cached(item)?.let { _summary.value = ItemSummary(item.key, SummaryState.Found(it)) }
+      val cached = container.summaries.cached(item)
+      when {
+        cached != null -> _summary.value = ItemSummary(item.key, SummaryState.Found(cached))
+        fetch -> _summary.value = ItemSummary(item.key, lookUpSummary(item))
+      }
     }
   }
 
   fun fetchSummary(item: CatalogItem) {
     summaryJob?.cancel()
     _summary.value = ItemSummary(item.key, SummaryState.Loading)
-    summaryJob = viewModelScope.launch {
-      val state = try {
-        container.summaries.fetch(item)?.let(SummaryState::Found) ?: SummaryState.NotFound
-      } catch (e: CancellationException) {
-        throw e
-      } catch (e: UnknownHostException) {
-        SummaryState.Failed("No internet connection.")
-      } catch (e: Exception) {
-        SummaryState.Failed(e.message ?: "Something went wrong.")
-      }
-      _summary.value = ItemSummary(item.key, state)
-    }
+    summaryJob = viewModelScope.launch { _summary.value = ItemSummary(item.key, lookUpSummary(item)) }
+  }
+
+  private suspend fun lookUpSummary(item: CatalogItem): SummaryState = try {
+    container.summaries.fetch(item)?.let(SummaryState::Found) ?: SummaryState.NotFound
+  } catch (e: CancellationException) {
+    throw e
+  } catch (e: UnknownHostException) {
+    SummaryState.Failed("No internet connection.")
+  } catch (e: Exception) {
+    SummaryState.Failed(e.message ?: "Something went wrong.")
   }
 
   private fun ensureLoaded(kind: MediaKind) {

@@ -7,7 +7,9 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import app.audioflix.download.DownloadQuota
 import app.audioflix.download.DownloadWorker
+import app.audioflix.download.QuotaStatus
 import app.audioflix.provider.CatalogItem
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -15,10 +17,16 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.withContext
 
+sealed interface DownloadResult {
+  data object Queued : DownloadResult
+  data class LimitReached(val status: QuotaStatus) : DownloadResult
+}
+
 class LibraryRepository(
   private val context: Context,
   private val dao: LibraryDao,
   private val settings: Settings,
+  val quota: DownloadQuota,
 ) {
   private val workManager get() = WorkManager.getInstance(context)
 
@@ -29,11 +37,18 @@ class LibraryRepository(
   suspend fun get(key: String): LibraryItemWithTracks? = dao.get(key)
 
   /** Adds [item] to the library and starts downloading it. Failed items are retried. */
-  suspend fun download(item: CatalogItem) {
+  /**
+   * Adds [item] to the library and starts downloading it. A new download counts against
+   * [dailyLimit]; retrying one that failed doesn't.
+   */
+  suspend fun download(item: CatalogItem, dailyLimit: Int?): DownloadResult {
     val existing = dao.getItem(item.key)
     if (existing != null) {
       if (existing.status == DownloadStatus.FAILED) retry(item.key)
-      return
+      return DownloadResult.Queued
+    }
+    if (dailyLimit != null && !quota.tryUse(item.providerId, dailyLimit)) {
+      return DownloadResult.LimitReached(quota.status(item.providerId, dailyLimit))
     }
     dao.insert(
       LibraryItem(
@@ -49,6 +64,7 @@ class LibraryRepository(
       ),
     )
     enqueue(item.key)
+    return DownloadResult.Queued
   }
 
   suspend fun retry(key: String) {

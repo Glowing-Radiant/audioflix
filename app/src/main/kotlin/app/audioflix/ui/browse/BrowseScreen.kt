@@ -64,7 +64,9 @@ import app.audioflix.data.LibraryItemWithTracks
 import app.audioflix.provider.CatalogItem
 import app.audioflix.provider.MediaKind
 import app.audioflix.ui.DropdownSelector
+import app.audioflix.download.QuotaStatus
 import app.audioflix.ui.LocalSnackbar
+import app.audioflix.ui.spokenDuration
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -77,6 +79,8 @@ fun BrowseScreen(
   val library by viewModel.library.collectAsStateWithLifecycle()
   val snackbar = LocalSnackbar.current
   var selected by remember { mutableStateOf<CatalogItem?>(null) }
+  // Set by the "View summary" action, so the popup looks the summary up straight away.
+  var fetchSummaryOnOpen by remember { mutableStateOf(false) }
 
   LaunchedEffect(viewModel) {
     viewModel.events.collect { event ->
@@ -90,6 +94,10 @@ fun BrowseScreen(
           if (result == SnackbarResult.ActionPerformed) onSignIn()
         }
         is BrowseEvent.Queued -> snackbar.showSnackbar("Downloading ${event.title}")
+        is BrowseEvent.LimitReached -> snackbar.showSnackbar(
+          message = limitReachedText(event.providerName, event.status),
+          duration = SnackbarDuration.Long,
+        )
       }
     }
   }
@@ -106,20 +114,36 @@ fun BrowseScreen(
         onSelect = viewModel::selectTab,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
       )
-      val onItemClick: (CatalogItem) -> Unit = { item ->
-        if (library[item.key] != null) onOpenItem(item.key) else selected = item
-      }
+      val actions = RowActions(
+        onClick = { item ->
+          if (library[item.key] != null) {
+            onOpenItem(item.key)
+          } else {
+            fetchSummaryOnOpen = false
+            selected = item
+          }
+        },
+        onViewSummary = { item ->
+          fetchSummaryOnOpen = true
+          selected = item
+        },
+        onDownload = viewModel::download,
+      )
       when (tab) {
-        BrowseTab.HOME -> HomeContent(viewModel, library, onItemClick)
-        BrowseTab.MOVIES -> ListingContent(viewModel, MediaKind.MOVIE, library, onItemClick)
-        BrowseTab.SHOWS -> ListingContent(viewModel, MediaKind.SHOW, library, onItemClick)
+        BrowseTab.HOME -> HomeContent(viewModel, library, actions)
+        BrowseTab.MOVIES -> ListingContent(viewModel, MediaKind.MOVIE, library, actions)
+        BrowseTab.SHOWS -> ListingContent(viewModel, MediaKind.SHOW, library, actions)
       }
     }
   }
 
   selected?.let { item ->
-    LaunchedEffect(item.key) { viewModel.showSummary(item) }
+    LaunchedEffect(item.key) { viewModel.showSummary(item, fetch = fetchSummaryOnOpen) }
+    val inLibrary = library[item.key] != null
     val summary by viewModel.summary.collectAsStateWithLifecycle()
+    val quotaChanges by viewModel.quotaChanges.collectAsStateWithLifecycle()
+    val quota = remember(item.key, quotaChanges) { viewModel.quota() }
+    val limitReached = quota != null && quota.remaining == 0
     AlertDialog(
       onDismissRequest = { selected = null },
       title = { Text(item.title) },
@@ -135,24 +159,48 @@ fun BrowseScreen(
             "Downloads go to your library, where you can listen offline and pick up where you left off.",
             style = MaterialTheme.typography.bodySmall,
           )
+          quota?.let {
+            Text(
+              if (limitReached) limitReachedText(viewModel.provider.displayName, it) else remainingText(viewModel.provider.displayName, it),
+              style = MaterialTheme.typography.bodyMedium,
+              color = if (limitReached) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
         }
       },
       confirmButton = {
-        Button(onClick = {
-          viewModel.download(item)
-          selected = null
-        }) { Text("Download") }
+        if (inLibrary) {
+          Button(onClick = {
+            selected = null
+            onOpenItem(item.key)
+          }) { Text("Open in library") }
+        } else {
+          Button(
+            onClick = {
+              viewModel.download(item)
+              selected = null
+            },
+            enabled = !limitReached,
+          ) { Text("Download") }
+        }
       },
       dismissButton = { TextButton(onClick = { selected = null }) { Text("Cancel") } },
     )
   }
 }
 
+/** What a catalog row does when activated and from its TalkBack actions. */
+private class RowActions(
+  val onClick: (CatalogItem) -> Unit,
+  val onViewSummary: (CatalogItem) -> Unit,
+  val onDownload: (CatalogItem) -> Unit,
+)
+
 @Composable
 private fun HomeContent(
   viewModel: BrowseViewModel,
   library: Map<String, LibraryItemWithTracks>,
-  onItemClick: (CatalogItem) -> Unit,
+  actions: RowActions,
 ) {
   val home by viewModel.home.collectAsStateWithLifecycle()
   when {
@@ -162,13 +210,7 @@ private fun HomeContent(
       home.sections.forEach { section ->
         item(key = "h:${section.title}") { SectionHeading(section.title) }
         items(section.items, key = { "${section.title}:${it.remoteId}" }) { item ->
-          CatalogRow(
-            item,
-            library[item.key],
-            showDescription = true,
-            onClick = { onItemClick(item) },
-            onDownload = { viewModel.download(item) },
-          )
+          CatalogRow(item, library[item.key], showDescription = true, actions)
         }
       }
     }
@@ -180,7 +222,7 @@ private fun ListingContent(
   viewModel: BrowseViewModel,
   kind: MediaKind,
   library: Map<String, LibraryItemWithTracks>,
-  onItemClick: (CatalogItem) -> Unit,
+  actions: RowActions,
 ) {
   val state by viewModel.listing(kind).collectAsStateWithLifecycle()
   val focus = LocalFocusManager.current
@@ -218,13 +260,7 @@ private fun ListingContent(
     }
     LazyColumn(Modifier.fillMaxSize()) {
       items(state.items, key = { it.remoteId }) { item ->
-        CatalogRow(
-          item,
-          library[item.key],
-          showDescription = false,
-          onClick = { onItemClick(item) },
-          onDownload = { viewModel.download(item) },
-        )
+        CatalogRow(item, library[item.key], showDescription = false, actions)
       }
       listFooter(state, onLoadMore = { viewModel.loadMore(kind) })
     }
@@ -251,8 +287,7 @@ private fun CatalogRow(
   item: CatalogItem,
   inLibrary: LibraryItemWithTracks?,
   showDescription: Boolean,
-  onClick: () -> Unit,
-  onDownload: () -> Unit,
+  actions: RowActions,
 ) {
   val status = inLibrary?.item
   val statusText = when (status?.status) {
@@ -266,17 +301,25 @@ private fun CatalogRow(
   }
   ListItem(
     modifier = Modifier
-      .clickable(onClickLabel = if (status == null) "Details and download" else "Open in library") { onClick() }
+      .clickable(onClickLabel = if (status == null) "Details and download" else "Open in library") {
+        actions.onClick(item)
+      }
       .semantics {
-        // Downloads straight from the list; activating the row still opens the details popup.
-        if (status == null) {
-          customActions = listOf(
+        // Shortcuts from the list; activating the row still opens the details popup.
+        customActions = listOfNotNull(
+          CustomAccessibilityAction("View summary") {
+            actions.onViewSummary(item)
+            true
+          },
+          if (status == null) {
             CustomAccessibilityAction("Download") {
-              onDownload()
+              actions.onDownload(item)
               true
-            },
-          )
-        }
+            }
+          } else {
+            null
+          },
+        )
       },
     headlineContent = { Text(item.title) },
     supportingContent = {
@@ -298,6 +341,17 @@ private fun CatalogRow(
     },
   )
   HorizontalDivider()
+}
+
+/** "18 of 25 AudioVault downloads left today." */
+internal fun remainingText(providerName: String, status: QuotaStatus): String =
+  "${status.remaining} of ${status.limit} $providerName downloads left today."
+
+internal fun limitReachedText(providerName: String, status: QuotaStatus): String {
+  val wait = status.nextFreeAt?.let { it - System.currentTimeMillis() }?.takeIf { it > 0 }
+  // Rounded up to whole minutes: "in 2 hours 5 minutes" reads better than seconds.
+  val next = wait?.let { " The next one is available in ${spokenDuration((it + 59_999) / 60_000 * 60_000)}." }.orEmpty()
+  return "You've used all ${status.limit} $providerName downloads for today.$next"
 }
 
 @Composable

@@ -52,6 +52,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.audioflix.container
 import app.audioflix.provider.CatalogProvider
 import app.audioflix.provider.LoginResult
+import app.audioflix.ui.browse.limitReachedText
+import app.audioflix.ui.browse.remainingText
 import app.audioflix.ui.formatBytes
 import app.audioflix.ui.update.UpdateCheckStatus
 import kotlinx.coroutines.Dispatchers
@@ -147,12 +149,15 @@ private fun ProviderAccount(provider: CatalogProvider) {
   SectionTitle(provider.displayName)
   if (!provider.requiresLogin) {
     Text("No account needed.")
+    SupportLinks(provider)
     return
   }
   val signedIn = account
   if (signedIn != null) {
     Text("Signed in as $signedIn", style = MaterialTheme.typography.bodyLarge)
+    DownloadAllowance(provider)
     OutlinedButton(onClick = { scope.launch { provider.logout() } }) { Text("Sign out") }
+    SupportLinks(provider)
     return
   }
 
@@ -195,6 +200,35 @@ private fun ProviderAccount(provider: CatalogProvider) {
     "Your password is only sent to ${provider.displayName} and is not stored on this device.",
     style = MaterialTheme.typography.bodySmall,
   )
+  SupportLinks(provider)
+}
+
+@Composable
+private fun DownloadAllowance(provider: CatalogProvider) {
+  val limit = provider.dailyDownloadLimit ?: return
+  val quota = LocalContext.current.container.library.quota
+  val changes by quota.changes.collectAsStateWithLifecycle()
+  val status = remember(changes) { quota.status(provider.id, limit) }
+  Text(
+    if (status.remaining == 0) limitReachedText(provider.displayName, status) else remainingText(provider.displayName, status),
+    style = MaterialTheme.typography.bodyMedium,
+  )
+}
+
+/** Links to the provider's own support and community pages, as thanks for its catalog. */
+@Composable
+private fun SupportLinks(provider: CatalogProvider) {
+  if (provider.supportLinks.isEmpty()) return
+  val context = LocalContext.current
+  Text(
+    "AudioFlix gets its titles from ${provider.displayName}. If you enjoy them, consider supporting ${provider.displayName}.",
+    style = MaterialTheme.typography.bodyMedium,
+  )
+  provider.supportLinks.forEach { link ->
+    OutlinedButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, link.url.toUri())) }) {
+      Text(link.label)
+    }
+  }
 }
 
 @Composable
