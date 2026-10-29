@@ -6,10 +6,13 @@ import app.audioflix.data.LibraryDatabase
 import app.audioflix.data.LibraryRepository
 import app.audioflix.data.Settings
 import app.audioflix.net.PersistentCookieJar
+import app.audioflix.net.createApiClient
 import app.audioflix.net.createHttpClient
 import app.audioflix.player.PlayerConnection
 import app.audioflix.provider.ProviderRegistry
 import app.audioflix.provider.audiovault.AudioVaultProvider
+import app.audioflix.summary.SummaryRepository
+import app.audioflix.summary.WikipediaClient
 import app.audioflix.update.UpdateManager
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
@@ -36,6 +39,7 @@ class AppContainer(context: Context) {
   private val prefs = context.getSharedPreferences("audioflix", Context.MODE_PRIVATE)
   private val cookieJar = PersistentCookieJar(File(context.filesDir, "cookies.txt"))
   private val httpClient = createHttpClient(cookieJar)
+  private val apiClient = createApiClient()
 
   val settings = Settings(prefs)
   val database = LibraryDatabase.create(context)
@@ -47,7 +51,9 @@ class AppContainer(context: Context) {
 
   val player = PlayerConnection(context, library, settings, appScope)
 
-  val updates = UpdateManager(context, settings, appScope)
+  val updates = UpdateManager(context, settings, apiClient, appScope)
+
+  val summaries = SummaryRepository(File(context.filesDir, "summaries"), WikipediaClient(apiClient))
 }
 
 val Context.container: AppContainer get() = (applicationContext as AudioFlixApp).container

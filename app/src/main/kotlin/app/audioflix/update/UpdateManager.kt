@@ -11,7 +11,6 @@ import java.io.File
 import java.io.IOException
 import java.net.UnknownHostException
 import java.security.MessageDigest
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -60,17 +59,10 @@ data class UpdateState(
 class UpdateManager(
   private val context: Context,
   private val settings: Settings,
+  private val http: OkHttpClient,
   private val scope: CoroutineScope,
 ) {
   val installed: AppVersion = AppVersion.parse(BuildConfig.VERSION_NAME) ?: AppVersion(0, 0, 0)
-
-  private val http = OkHttpClient.Builder()
-    .connectTimeout(20, TimeUnit.SECONDS)
-    .readTimeout(60, TimeUnit.SECONDS)
-    .addInterceptor { chain ->
-      chain.proceed(chain.request().newBuilder().header("User-Agent", "AudioFlix/$installed").build())
-    }
-    .build()
 
   private val downloadDir = File(context.cacheDir, "updates")
 

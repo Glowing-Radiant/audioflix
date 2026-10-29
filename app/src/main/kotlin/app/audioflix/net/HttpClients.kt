@@ -1,5 +1,6 @@
 package app.audioflix.net
 
+import app.audioflix.BuildConfig
 import java.util.concurrent.TimeUnit
 import okhttp3.Call
 import okhttp3.OkHttpClient
@@ -34,6 +35,19 @@ fun createHttpClient(cookieJar: PersistentCookieJar): OkHttpClient =
       chain.proceed(request)
     }
     .build()
+
+/**
+ * A client for public APIs (GitHub, Wikipedia). It names the app honestly in its User-Agent, as
+ * both services ask, and sends no cookies.
+ */
+fun createApiClient(): OkHttpClient {
+  val userAgent = "AudioFlix/${BuildConfig.VERSION_NAME} (https://github.com/${BuildConfig.UPDATE_REPOSITORY})"
+  return OkHttpClient.Builder()
+    .connectTimeout(20, TimeUnit.SECONDS)
+    .readTimeout(60, TimeUnit.SECONDS)
+    .addInterceptor { chain -> chain.proceed(chain.request().newBuilder().header("User-Agent", userAgent).build()) }
+    .build()
+}
 
 /** Executes the call without blocking a thread, cancelling it if the coroutine is cancelled. */
 suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->

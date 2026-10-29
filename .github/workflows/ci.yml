@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
 
 jobs:
@@ -23,6 +23,13 @@ jobs:
 
       - name: Test and build
         run: ./gradlew testDebugUnitTest assembleDebug
+
+      # A development build (AudioFlix Dev) to try a branch on a phone.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: audioflix-dev
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
 
       - name: Check the changelog
         run: |

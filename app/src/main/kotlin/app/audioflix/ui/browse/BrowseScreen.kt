@@ -12,8 +12,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
@@ -47,7 +49,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -112,13 +118,19 @@ fun BrowseScreen(
   }
 
   selected?.let { item ->
+    LaunchedEffect(item.key) { viewModel.showSummary(item) }
+    val summary by viewModel.summary.collectAsStateWithLifecycle()
     AlertDialog(
       onDismissRequest = { selected = null },
       title = { Text(item.title) },
       text = {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
           item.kind?.let { Text(if (it == MediaKind.SHOW) "TV show" else "Movie") }
           item.description?.let { Text(it) }
+          SummarySection(
+            state = summary?.takeIf { it.itemKey == item.key }?.state ?: SummaryState.NotLoaded,
+            onFetch = { viewModel.fetchSummary(item) },
+          )
           Text(
             "Downloads go to your library, where you can listen offline and pick up where you left off.",
             style = MaterialTheme.typography.bodySmall,
@@ -150,7 +162,13 @@ private fun HomeContent(
       home.sections.forEach { section ->
         item(key = "h:${section.title}") { SectionHeading(section.title) }
         items(section.items, key = { "${section.title}:${it.remoteId}" }) { item ->
-          CatalogRow(item, library[item.key], showDescription = true, onClick = { onItemClick(item) })
+          CatalogRow(
+            item,
+            library[item.key],
+            showDescription = true,
+            onClick = { onItemClick(item) },
+            onDownload = { viewModel.download(item) },
+          )
         }
       }
     }
@@ -200,7 +218,13 @@ private fun ListingContent(
     }
     LazyColumn(Modifier.fillMaxSize()) {
       items(state.items, key = { it.remoteId }) { item ->
-        CatalogRow(item, library[item.key], showDescription = false, onClick = { onItemClick(item) })
+        CatalogRow(
+          item,
+          library[item.key],
+          showDescription = false,
+          onClick = { onItemClick(item) },
+          onDownload = { viewModel.download(item) },
+        )
       }
       listFooter(state, onLoadMore = { viewModel.loadMore(kind) })
     }
@@ -228,6 +252,7 @@ private fun CatalogRow(
   inLibrary: LibraryItemWithTracks?,
   showDescription: Boolean,
   onClick: () -> Unit,
+  onDownload: () -> Unit,
 ) {
   val status = inLibrary?.item
   val statusText = when (status?.status) {
@@ -240,7 +265,19 @@ private fun CatalogRow(
     DownloadStatus.FAILED -> "Download failed"
   }
   ListItem(
-    modifier = Modifier.clickable(onClickLabel = if (status == null) "Download options" else "Open in library") { onClick() },
+    modifier = Modifier
+      .clickable(onClickLabel = if (status == null) "Details and download" else "Open in library") { onClick() }
+      .semantics {
+        // Downloads straight from the list; activating the row still opens the details popup.
+        if (status == null) {
+          customActions = listOf(
+            CustomAccessibilityAction("Download") {
+              onDownload()
+              true
+            },
+          )
+        }
+      },
     headlineContent = { Text(item.title) },
     supportingContent = {
       val lines = listOfNotNull(
@@ -261,6 +298,38 @@ private fun CatalogRow(
     },
   )
   HorizontalDivider()
+}
+
+@Composable
+private fun SummarySection(state: SummaryState, onFetch: () -> Unit) {
+  // Announced when a lookup finishes, since the button the user pressed goes away.
+  Column(
+    Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+    verticalArrangement = Arrangement.spacedBy(8.dp),
+  ) {
+    when (state) {
+      SummaryState.NotLoaded -> OutlinedButton(onClick = onFetch) { Text("Get summary from Wikipedia") }
+      SummaryState.Loading -> Row(
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+        Text("Looking it up on Wikipedia…")
+      }
+      is SummaryState.Found -> {
+        state.summary.description?.let {
+          Text(it.replaceFirstChar(Char::uppercase), style = MaterialTheme.typography.titleSmall)
+        }
+        Text(state.summary.extract)
+        Text("From Wikipedia: ${state.summary.articleTitle}", style = MaterialTheme.typography.bodySmall)
+      }
+      SummaryState.NotFound -> Text("Wikipedia has no article that matches this title.")
+      is SummaryState.Failed -> {
+        Text("Couldn't get a summary. ${state.message}", color = MaterialTheme.colorScheme.error)
+        OutlinedButton(onClick = onFetch) { Text("Try again") }
+      }
+    }
+  }
 }
 
 @Composable

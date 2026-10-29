@@ -8,6 +8,8 @@ import app.audioflix.provider.CatalogItem
 import app.audioflix.provider.CatalogProvider
 import app.audioflix.provider.CatalogSection
 import app.audioflix.provider.MediaKind
+import app.audioflix.summary.TitleSummary
+import java.net.UnknownHostException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -38,6 +40,18 @@ data class ListingState(
   val error: String? = null,
 )
 
+sealed interface SummaryState {
+  /** Not in the cache; the user can ask for it. */
+  data object NotLoaded : SummaryState
+  data object Loading : SummaryState
+  data class Found(val summary: TitleSummary) : SummaryState
+  data object NotFound : SummaryState
+  data class Failed(val message: String) : SummaryState
+}
+
+/** The summary shown in the details popup, tagged with the item it belongs to. */
+data class ItemSummary(val itemKey: String, val state: SummaryState)
+
 sealed interface BrowseEvent {
   data class NeedsSignIn(val providerName: String) : BrowseEvent
   data class Queued(val title: String) : BrowseEvent
@@ -61,6 +75,10 @@ class BrowseViewModel(private val container: AppContainer) : ViewModel() {
   val library: StateFlow<Map<String, LibraryItemWithTracks>> = container.library.items
     .map { list -> list.associateBy { it.item.key } }
     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
+  private val _summary = MutableStateFlow<ItemSummary?>(null)
+  val summary: StateFlow<ItemSummary?> = _summary.asStateFlow()
+  private var summaryJob: Job? = null
 
   private val _events = Channel<BrowseEvent>(Channel.BUFFERED)
   val events = _events.receiveAsFlow()
@@ -136,6 +154,32 @@ class BrowseViewModel(private val container: AppContainer) : ViewModel() {
       }
       container.library.download(item)
       _events.send(BrowseEvent.Queued(item.title))
+    }
+  }
+
+  /** Shows the cached summary for [item], if there is one, when its details popup opens. */
+  fun showSummary(item: CatalogItem) {
+    summaryJob?.cancel()
+    _summary.value = ItemSummary(item.key, SummaryState.NotLoaded)
+    summaryJob = viewModelScope.launch {
+      container.summaries.cached(item)?.let { _summary.value = ItemSummary(item.key, SummaryState.Found(it)) }
+    }
+  }
+
+  fun fetchSummary(item: CatalogItem) {
+    summaryJob?.cancel()
+    _summary.value = ItemSummary(item.key, SummaryState.Loading)
+    summaryJob = viewModelScope.launch {
+      val state = try {
+        container.summaries.fetch(item)?.let(SummaryState::Found) ?: SummaryState.NotFound
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: UnknownHostException) {
+        SummaryState.Failed("No internet connection.")
+      } catch (e: Exception) {
+        SummaryState.Failed(e.message ?: "Something went wrong.")
+      }
+      _summary.value = ItemSummary(item.key, state)
     }
   }
 

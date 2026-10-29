@@ -17,12 +17,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 
 /**
  * A single labelled dropdown for picking one of [options]. Used instead of tab rows and chip groups
- * so a screen reader meets one control rather than one stop per option.
+ * so a screen reader meets one control rather than one stop per option. Every other option is also
+ * a custom accessibility action, so TalkBack users can switch without opening the menu.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -43,7 +46,17 @@ fun <T> DropdownSelector(
       singleLine = true,
       label = { Text(label) },
       trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-      modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
+      modifier = Modifier
+        .fillMaxWidth()
+        .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+        .semantics {
+          customActions = options.filter { it != selected }.map { option ->
+            CustomAccessibilityAction("$label: ${optionLabel(option)}") {
+              onSelect(option)
+              true
+            }
+          }
+        },
     )
     ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
       options.forEach { option ->
