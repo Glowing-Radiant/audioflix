@@ -16,7 +16,7 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
 
       - name: Install Android platform
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-37.0" > /dev/null
@@ -25,4 +25,5 @@ jobs:
         run: ./gradlew testDebugUnitTest assembleDebug
 
       - name: Check the changelog
-        run: grep -q '^## \[Unreleased\]$' CHANGELOG.md || { echo "::error::CHANGELOG.md needs an ## [Unreleased] section"; exit 1; }
+        run: |
+          grep -q '^## \[Unreleased\]$' CHANGELOG.md || { echo "::error::CHANGELOG.md needs an ## [Unreleased] section"; exit 1; }
