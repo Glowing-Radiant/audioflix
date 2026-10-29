@@ -9,7 +9,7 @@ plugins {
 
 // The single source of the app version. scripts/release.sh bumps it; the release workflow checks
 // that the pushed tag matches it.
-val appVersion = "0.1.0"
+val appVersion = "0.2.0"
 
 // GitHub repository whose releases the in-app updater checks.
 val updateRepository = "Glowing-Radiant/audioflix"

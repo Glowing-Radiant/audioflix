@@ -9,6 +9,8 @@ the code changed. `scripts/release.sh` turns Unreleased into the new version's s
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-29
+
 ### Added
 - The Library filter and the Browse category can be changed from TalkBack's actions menu, without opening the list.
 - Browse results have Download and View summary actions in TalkBack's actions menu. Activating a title still opens its details first.
