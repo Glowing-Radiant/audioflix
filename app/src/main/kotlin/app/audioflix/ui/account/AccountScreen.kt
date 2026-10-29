@@ -53,16 +53,18 @@ import app.audioflix.container
 import app.audioflix.provider.CatalogProvider
 import app.audioflix.provider.LoginResult
 import app.audioflix.ui.formatBytes
+import app.audioflix.ui.update.UpdateCheckStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AccountScreen() {
+fun AccountScreen(onOpenUpdate: () -> Unit) {
   val context = LocalContext.current
   val container = context.container
   val wifiOnly by container.settings.wifiOnly.collectAsStateWithLifecycle()
+  val updateState by container.updates.state.collectAsStateWithLifecycle()
   var storageUsed by remember { mutableLongStateOf(-1L) }
 
   LaunchedEffect(Unit) {
@@ -99,6 +101,21 @@ fun AccountScreen() {
         if (storageUsed < 0) "Calculating storage used…" else "Library uses ${formatBytes(storageUsed)} on this device.",
         style = MaterialTheme.typography.bodyMedium,
       )
+
+      HorizontalDivider()
+      SectionTitle("App updates")
+      Text("AudioFlix version ${container.updates.installed}", style = MaterialTheme.typography.bodyLarge)
+      UpdateCheckStatus(updateState, Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+      Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (updateState.available != null) {
+          Button(onClick = onOpenUpdate) { Text("View update") }
+        } else {
+          OutlinedButton(onClick = container.updates::check, enabled = !updateState.checking) {
+            Text("Check for updates")
+          }
+        }
+        if (updateState.checking) CircularProgressIndicator(Modifier.padding(4.dp))
+      }
     }
   }
 }

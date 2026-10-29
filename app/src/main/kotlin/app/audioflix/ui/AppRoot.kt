@@ -17,6 +17,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -40,6 +41,7 @@ import app.audioflix.ui.library.LibraryScreen
 import app.audioflix.ui.library.LibraryViewModel
 import app.audioflix.ui.player.MiniPlayer
 import app.audioflix.ui.player.PlayerScreen
+import app.audioflix.ui.update.UpdateScreen
 import kotlinx.serialization.Serializable
 
 @Serializable data object BrowseKey : NavKey
@@ -47,6 +49,7 @@ import kotlinx.serialization.Serializable
 @Serializable data object AccountKey : NavKey
 @Serializable data class DetailKey(val itemKey: String) : NavKey
 @Serializable data object PlayerKey : NavKey
+@Serializable data object UpdateKey : NavKey
 
 private data class Tab(val key: NavKey, val label: String, val icon: ImageVector)
 
@@ -65,6 +68,7 @@ fun AppRoot() {
   val backStack = rememberNavBackStack(LibraryKey)
   val snackbar = remember { SnackbarHostState() }
   val playerState by container.player.state.collectAsStateWithLifecycle()
+  val updateState by container.updates.state.collectAsStateWithLifecycle()
 
   // Top-level screens keep their state (search results, filters) while switching tabs.
   val browseViewModel: BrowseViewModel = viewModel { BrowseViewModel(container) }
@@ -74,6 +78,14 @@ fun AppRoot() {
     if (backStack.size == 1 && backStack.first() == key) return
     backStack.clear()
     backStack.add(key)
+  }
+
+  // Open the update screen once for each new version found.
+  val availableUpdate = updateState.available
+  LaunchedEffect(availableUpdate?.latest?.version) {
+    if (availableUpdate != null && container.updates.shouldPrompt(availableUpdate) && backStack.lastOrNull() != UpdateKey) {
+      backStack.add(UpdateKey)
+    }
   }
 
   val current = backStack.lastOrNull()
@@ -132,7 +144,8 @@ fun AppRoot() {
               onSignIn = { selectTab(AccountKey) },
             )
           }
-          entry<AccountKey> { AccountScreen() }
+          entry<AccountKey> { AccountScreen(onOpenUpdate = { backStack.add(UpdateKey) }) }
+          entry<UpdateKey> { UpdateScreen(onBack = { backStack.removeLastOrNull() }) }
           entry<DetailKey> { key ->
             ItemDetailScreen(
               itemKey = key.itemKey,

@@ -10,6 +10,7 @@ import app.audioflix.net.createHttpClient
 import app.audioflix.player.PlayerConnection
 import app.audioflix.provider.ProviderRegistry
 import app.audioflix.provider.audiovault.AudioVaultProvider
+import app.audioflix.update.UpdateManager
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
@@ -23,6 +24,8 @@ class AudioFlixApp : Application() {
     super.onCreate()
     container = AppContainer(this)
     container.appScope.launch { container.library.resumePending() }
+    container.updates.cleanUpDownloads()
+    if (BuildConfig.CHECK_UPDATES_ON_START) container.updates.check()
   }
 }
 
@@ -43,6 +46,8 @@ class AppContainer(context: Context) {
   )
 
   val player = PlayerConnection(context, library, settings, appScope)
+
+  val updates = UpdateManager(context, settings, appScope)
 }
 
 val Context.container: AppContainer get() = (applicationContext as AudioFlixApp).container
