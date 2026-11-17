@@ -9,6 +9,8 @@ the code changed. `scripts/release.sh` turns Unreleased into the new version's s
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-17
+
 ### Added
 - Google Drive as a second source in Browse: paste a link to a folder or file shared as "Anyone with the link" and browse its folders, with no Google account. Folders you open are kept under "Your folders".
 - Add a whole Drive folder (subfolders included) or a single file to your library, either to stream or to download. Streaming plays straight from Drive and takes no space; downloads work offline, and zip files in them are unpacked.
