@@ -7,14 +7,24 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import app.audioflix.chapters.ChapterReader
+import app.audioflix.chapters.Mp4Chapters
 import app.audioflix.download.DownloadQuota
 import app.audioflix.download.DownloadWorker
+import app.audioflix.download.MediaInstaller
+import app.audioflix.download.NaturalOrder
 import app.audioflix.download.QuotaStatus
 import app.audioflix.provider.CatalogItem
+import app.audioflix.provider.CatalogProvider
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.guava.await
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 sealed interface DownloadResult {
@@ -22,11 +32,21 @@ sealed interface DownloadResult {
   data class LimitReached(val status: QuotaStatus) : DownloadResult
 }
 
+sealed interface StreamResult {
+  /** [skippedArchives] zips were left out: they can only be downloaded. */
+  data class Added(val trackCount: Int, val skippedArchives: Int) : StreamResult
+  data object AlreadyInLibrary : StreamResult
+
+  /** Nothing here can be streamed; [archives] zips could still be downloaded. */
+  data class NothingToStream(val archives: Int) : StreamResult
+}
+
 class LibraryRepository(
   private val context: Context,
   private val dao: LibraryDao,
   private val settings: Settings,
   val quota: DownloadQuota,
+  private val chapters: ChapterReader,
 ) {
   private val workManager get() = WorkManager.getInstance(context)
 
@@ -36,17 +56,13 @@ class LibraryRepository(
 
   suspend fun get(key: String): LibraryItemWithTracks? = dao.get(key)
 
-  /** Adds [item] to the library and starts downloading it. Failed items are retried. */
   /**
-   * Adds [item] to the library and starts downloading it. A new download counts against
-   * [dailyLimit]; retrying one that failed doesn't.
+   * Adds [item] to the library and starts downloading it, or downloads it if it's in the library
+   * for streaming. A new download counts against [dailyLimit]; retrying one that failed doesn't.
    */
   suspend fun download(item: CatalogItem, dailyLimit: Int?): DownloadResult {
     val existing = dao.getItem(item.key)
-    if (existing != null) {
-      if (existing.status == DownloadStatus.FAILED) retry(item.key)
-      return DownloadResult.Queued
-    }
+    if (existing != null) return downloadExisting(existing, dailyLimit)
     if (dailyLimit != null && !quota.tryUse(item.providerId, dailyLimit)) {
       return DownloadResult.LimitReached(quota.status(item.providerId, dailyLimit))
     }
@@ -65,6 +81,95 @@ class LibraryRepository(
     )
     enqueue(item.key)
     return DownloadResult.Queued
+  }
+
+  /** Downloads a library item that is only streamed so far, or retries a failed download. */
+  suspend fun download(key: String, dailyLimit: Int?): DownloadResult {
+    val existing = dao.getItem(key) ?: return DownloadResult.Queued
+    return downloadExisting(existing, dailyLimit)
+  }
+
+  private suspend fun downloadExisting(existing: LibraryItem, dailyLimit: Int?): DownloadResult {
+    when (existing.status) {
+      DownloadStatus.FAILED -> retry(existing.key)
+      DownloadStatus.ONLINE -> {
+        if (dailyLimit != null && !quota.tryUse(existing.providerId, dailyLimit)) {
+          return DownloadResult.LimitReached(quota.status(existing.providerId, dailyLimit))
+        }
+        retry(existing.key)
+      }
+      else -> {}
+    }
+    return DownloadResult.Queued
+  }
+
+  /**
+   * Adds [item] to the library without downloading it: its audio files become tracks that play
+   * straight from [provider]. Zips can't be streamed, so they're left out. Audiobook files are
+   * split into their chapters, read from a few byte ranges of each file.
+   */
+  suspend fun addForStreaming(item: CatalogItem, provider: CatalogProvider): StreamResult {
+    if (dao.getItem(item.key) != null) return StreamResult.AlreadyInLibrary
+    val files = provider.files(item.remoteId) ?: return StreamResult.NothingToStream(0)
+    val archives = files.count { MediaInstaller.isArchiveName(it.relativePath) }
+    val audio = files
+      .filter { MediaInstaller.isAudioName(it.relativePath) && provider.streamUrl(it.id) != null }
+      .sortedWith(compareBy(NaturalOrder) { it.relativePath })
+    if (audio.isEmpty()) return StreamResult.NothingToStream(archives)
+    dao.insert(
+      LibraryItem(
+        key = item.key,
+        providerId = item.providerId,
+        remoteId = item.remoteId,
+        title = item.title,
+        kind = item.kind,
+        description = item.description,
+        status = DownloadStatus.ONLINE,
+        localDir = itemDir(item.providerId, item.remoteId).path,
+        addedAt = System.currentTimeMillis(),
+      ),
+    )
+    val infos = coroutineScope {
+      val permits = Semaphore(4)
+      audio.map { file ->
+        async {
+          val url = provider.streamUrl(file.id)
+          if (url != null && Mp4Chapters.isMp4Name(file.relativePath)) {
+            permits.withPermit { chapters.readRemote(url) }
+          } else {
+            null
+          }
+        }
+      }.awaitAll()
+    }
+    val tracks = mutableListOf<Track>()
+    audio.forEachIndexed { i, file ->
+      val info = infos[i]
+      tracks += MediaInstaller.tracksForFile(
+        itemKey = item.key,
+        firstIndex = tracks.size,
+        relativePath = file.relativePath,
+        // Unknown for other formats until played; the player fills it in then.
+        durationMs = info?.durationMs ?: 0,
+        chapters = info?.chapters.orEmpty(),
+        remoteFileId = file.id,
+      )
+    }
+    dao.insertTracks(tracks)
+    return StreamResult.Added(tracks.size, archives)
+  }
+
+  /**
+   * Stops a download, or removes downloaded files, of an item that can be streamed: it stays in the
+   * library with its listening progress. Items that can't be streamed are deleted instead.
+   */
+  suspend fun removeDownload(key: String) {
+    val entry = dao.get(key) ?: return
+    if (!entry.streamable) return delete(key)
+    runCatching { workManager.cancelUniqueWork(workName(key)).result.await() }
+    dao.setStatus(key, DownloadStatus.ONLINE)
+    dao.setProgress(key, 0, -1)
+    withContext(Dispatchers.IO) { File(entry.item.localDir).deleteRecursively() }
   }
 
   suspend fun retry(key: String) {

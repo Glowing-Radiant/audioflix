@@ -1,6 +1,8 @@
 package app.audioflix.download
 
 import android.media.MediaMetadataRetriever
+import app.audioflix.chapters.Chapter
+import app.audioflix.chapters.Mp4Chapters
 import app.audioflix.data.Track
 import java.io.File
 import java.io.FileInputStream
@@ -33,22 +35,80 @@ object MediaInstaller {
     return false
   }
 
-  /** All audio files under [dir], in natural (episode) order, as tracks of [itemKey]. */
+  fun isAudioName(name: String): Boolean = name.substringAfterLast('.', "").lowercase() in audioExtensions
+
+  fun isArchiveName(name: String): Boolean = name.substringAfterLast('.', "").lowercase() == "zip"
+
+  /**
+   * Unpacks every zip under [dir] next to where it lies, then deletes it. Used for titles that
+   * arrive as several files, some of which may be archives.
+   */
+  fun extractArchives(dir: File) {
+    val zips = dir.walkTopDown().filter { it.isFile && isArchiveName(it.name) && isZip(it) }.toList()
+    for (zip in zips) {
+      unzip(zip, zip.parentFile ?: dir)
+      zip.delete()
+    }
+  }
+
+  /**
+   * All audio files under [dir], in natural (episode) order, as tracks of [itemKey]. Files with
+   * chapters (audiobooks) become one track per chapter.
+   */
   fun scanTracks(dir: File, itemKey: String): List<Track> {
     val root = dir.canonicalFile
     val files = root.walkTopDown()
       .onEnter { it.name != "__MACOSX" }
-      .filter { it.isFile && !it.name.startsWith("._") && it.extension.lowercase() in audioExtensions }
+      .filter { it.isFile && !it.name.startsWith("._") && isAudioName(it.name) }
       .map { it.relativeTo(root).path.replace(File.separatorChar, '/') }
       .sortedWith(NaturalOrder)
       .toList()
-    return files.mapIndexed { i, rel ->
+    val tracks = mutableListOf<Track>()
+    for (rel in files) {
+      val file = File(root, rel)
+      val info = if (Mp4Chapters.isMp4Name(rel)) Mp4Chapters.readFile(file) else null
+      val durationMs = info?.durationMs?.takeIf { it > 0 } ?: probeDurationMs(file)
+      tracks += tracksForFile(itemKey, tracks.size, rel, durationMs, info?.chapters.orEmpty(), remoteFileId = null)
+    }
+    return tracks
+  }
+
+  /**
+   * The tracks one file contributes, numbered from [firstIndex]: one per chapter when it has two
+   * or more [chapters], otherwise the whole file.
+   */
+  fun tracksForFile(
+    itemKey: String,
+    firstIndex: Int,
+    relativePath: String,
+    durationMs: Long,
+    chapters: List<Chapter>,
+    remoteFileId: String?,
+  ): List<Track> {
+    if (chapters.size < 2) {
+      return listOf(
+        Track(
+          itemKey = itemKey,
+          index = firstIndex,
+          title = trackTitle(relativePath),
+          relativePath = relativePath,
+          durationMs = durationMs,
+          remoteFileId = remoteFileId,
+        ),
+      )
+    }
+    return chapters.mapIndexed { i, chapter ->
+      val end = chapters.getOrNull(i + 1)?.startMs
+      val length = (end ?: durationMs) - chapter.startMs
       Track(
         itemKey = itemKey,
-        index = i,
-        title = prettyTitle(rel),
-        relativePath = rel,
-        durationMs = probeDurationMs(File(root, rel)),
+        index = firstIndex + i,
+        title = chapter.title,
+        relativePath = relativePath,
+        durationMs = length.coerceAtLeast(0),
+        remoteFileId = remoteFileId,
+        startMs = chapter.startMs,
+        endMs = end,
       )
     }
   }
@@ -96,10 +156,12 @@ object MediaInstaller {
     }
   }
 
-  private fun prettyTitle(relativePath: String): String =
+  /** A track's title from its file name: "Episode_01.mp3" -> "Episode 01". */
+  fun trackTitle(relativePath: String): String =
     relativePath.substringAfterLast('/').substringBeforeLast('.').replace('_', ' ').trim()
 
-  private fun sanitizeFileName(name: String): String =
+  /** [name] made safe as a single file or folder name on the phone's storage. */
+  fun sanitizeFileName(name: String): String =
     name.replace(Regex("""[\\/:*?"<>|\u0000-\u001f]"""), "_").trim().take(150).ifEmpty { "audio" }
 }
 

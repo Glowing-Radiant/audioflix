@@ -9,6 +9,14 @@ the code changed. `scripts/release.sh` turns Unreleased into the new version's s
 
 ## [Unreleased]
 
+### Added
+- Google Drive as a second source in Browse: paste a link to a folder or file shared as "Anyone with the link" and browse its folders, with no Google account. Folders you open are kept under "Your folders".
+- Add a whole Drive folder (subfolders included) or a single file to your library, either to stream or to download. Streaming plays straight from Drive and takes no space; downloads work offline, and zip files in them are unpacked.
+- A streamed title can be downloaded later from its page, keeping your listening progress, and a downloaded one can go back to streaming with "Remove download, keep streaming".
+- The player says why playback stopped when a file can't be played, for example when Drive is limiting a popular file.
+- Audiobook files (m4b and m4a) with chapters show each chapter as its own track, streamed or downloaded. Next and previous move between chapters, listening progress is kept per chapter, and when a title has several books, the track list puts each book's chapters under its own heading.
+- Streamed audio is kept in a small cache on the phone, so moving between chapters or going back doesn't download the same part again.
+
 ## [0.2.0] - 2026-10-29
 
 ### Added

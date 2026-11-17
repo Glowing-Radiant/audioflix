@@ -1,10 +1,10 @@
 package app.audioflix.provider.audiovault
 
+import app.audioflix.net.contentDispositionFileName
 import app.audioflix.provider.CatalogItem
 import app.audioflix.provider.CatalogPage
 import app.audioflix.provider.CatalogSection
 import app.audioflix.provider.MediaKind
-import java.net.URLDecoder
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 
@@ -67,20 +67,7 @@ object AudioVaultParser {
     Jsoup.parse(html).selectFirst("input[type=password]") != null
 
   /** Extracts the file name from a Content-Disposition header (RFC 6266, incl. `filename*`). */
-  fun parseFileName(contentDisposition: String?): String? {
-    if (contentDisposition.isNullOrBlank()) return null
-    Regex("""filename\*\s*=\s*([^']*)'[^']*'([^;]+)""", RegexOption.IGNORE_CASE)
-      .find(contentDisposition)
-      ?.let { m ->
-        val charset = m.groupValues[1].ifBlank { "UTF-8" }
-        return runCatching { URLDecoder.decode(m.groupValues[2].trim(), charset) }.getOrNull()
-      }
-    Regex("""filename\s*=\s*"([^"]*)"""", RegexOption.IGNORE_CASE).find(contentDisposition)
-      ?.let { return it.groupValues[1].ifBlank { null } }
-    Regex("""filename\s*=\s*([^;]+)""", RegexOption.IGNORE_CASE).find(contentDisposition)
-      ?.let { return it.groupValues[1].trim().ifBlank { null } }
-    return null
-  }
+  fun parseFileName(contentDisposition: String?): String? = contentDispositionFileName(contentDisposition)
 
   private fun parseRows(tbody: Element, kind: MediaKind): List<CatalogItem> =
     tbody.select("tr").mapNotNull { row ->

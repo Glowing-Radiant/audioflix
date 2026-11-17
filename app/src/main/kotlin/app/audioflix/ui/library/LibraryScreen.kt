@@ -104,9 +104,9 @@ private fun LibraryRow(
     supportingContent = {
       Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(summary)
-        val progress = when (item.status) {
-          DownloadStatus.COMPLETED -> entry.listenedFraction.takeIf { it > 0f }
-          DownloadStatus.DOWNLOADING -> downloadPercent(entry) / 100f
+        val progress = when {
+          item.status == DownloadStatus.DOWNLOADING -> downloadPercent(entry) / 100f
+          entry.playable -> entry.listenedFraction.takeIf { it > 0f }
           else -> null
         }
         // The summary text already says this; keep the bar out of the accessibility tree.
@@ -119,8 +119,8 @@ private fun LibraryRow(
       }
     },
     trailingContent = {
-      when (item.status) {
-        DownloadStatus.COMPLETED -> IconButton(onClick = onPlay) {
+      when {
+        entry.playable -> IconButton(onClick = onPlay) {
           val playing = isCurrent && player.isPlaying
           Icon(
             if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
@@ -131,7 +131,7 @@ private fun LibraryRow(
             },
           )
         }
-        DownloadStatus.FAILED -> IconButton(onClick = onRetry) {
+        item.status == DownloadStatus.FAILED -> IconButton(onClick = onRetry) {
           Icon(Icons.Filled.Refresh, contentDescription = "Retry download of ${item.title}")
         }
         else -> {}

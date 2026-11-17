@@ -56,8 +56,15 @@ class DownloadStream(
 }
 
 /**
- * A source of audio titles. AudioVault is the only one today; anything that can list, search and
- * hand out a downloadable file (mp3 or a zip of mp3s) can implement this.
+ * One file of a title made of several (a folder of episodes, say). [relativePath] is where it goes
+ * inside the title's directory, with "/" between folders.
+ */
+data class RemoteFile(val id: String, val relativePath: String)
+
+/**
+ * A source of audio titles: anything that can list, search and hand out a downloadable file (mp3 or
+ * a zip of mp3s) can implement this. Providers that aren't a searchable catalog, such as shared
+ * Google Drive folders, keep the defaults for the parts they don't have.
  */
 interface CatalogProvider {
   val id: String
@@ -66,7 +73,7 @@ interface CatalogProvider {
   val requiresLogin: Boolean
 
   /** Where users can create an account, if the provider has accounts. */
-  val signUpUrl: String?
+  val signUpUrl: String? get() = null
 
   /** How many new downloads the provider allows in a day, or null for no limit. */
   val dailyDownloadLimit: Int? get() = null
@@ -78,16 +85,30 @@ interface CatalogProvider {
   val account: StateFlow<String?>
 
   /** Curated sections for the provider's landing page (featured, recently added, ...). */
-  suspend fun home(): List<CatalogSection>
+  suspend fun home(): List<CatalogSection> = emptyList()
 
   /** [page] is 1-based. */
-  suspend fun browse(kind: MediaKind, page: Int): CatalogPage
+  suspend fun browse(kind: MediaKind, page: Int): CatalogPage = CatalogPage(emptyList(), page, hasNext = false)
 
-  suspend fun search(kind: MediaKind, query: String, page: Int): CatalogPage
+  suspend fun search(kind: MediaKind, query: String, page: Int): CatalogPage =
+    CatalogPage(emptyList(), page, hasNext = false)
 
-  suspend fun login(email: String, password: String): LoginResult
+  suspend fun login(email: String, password: String): LoginResult =
+    LoginResult.Error("$displayName doesn't use accounts.")
 
-  suspend fun logout()
+  suspend fun logout() {}
+
+  /**
+   * The files [remoteId] is made of, or null when it is a single download (then [openDownload] is
+   * called with [remoteId] itself). Each file is then opened with [openDownload] by its own id.
+   */
+  suspend fun files(remoteId: String): List<RemoteFile>? = null
+
+  /** The size of the file [fileId] in bytes, or -1 if unknown. Used for overall download progress. */
+  suspend fun fileSize(fileId: String): Long = -1
+
+  /** A URL the player can stream [fileId] from without signing in, or null if it can't be streamed. */
+  fun streamUrl(fileId: String): String? = null
 
   /**
    * Opens the file for [remoteId], resuming from [resumeFrom] bytes when the server supports it.

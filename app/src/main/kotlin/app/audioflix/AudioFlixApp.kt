@@ -2,6 +2,12 @@ package app.audioflix
 
 import android.app.Application
 import android.content.Context
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.database.StandaloneDatabaseProvider
+import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
+import androidx.media3.datasource.cache.SimpleCache
+import app.audioflix.chapters.ChapterReader
 import app.audioflix.data.LibraryDatabase
 import app.audioflix.data.LibraryRepository
 import app.audioflix.data.Settings
@@ -12,6 +18,7 @@ import app.audioflix.net.createHttpClient
 import app.audioflix.player.PlayerConnection
 import app.audioflix.provider.ProviderRegistry
 import app.audioflix.provider.audiovault.AudioVaultProvider
+import app.audioflix.provider.gdrive.GoogleDriveProvider
 import app.audioflix.summary.SummaryRepository
 import app.audioflix.summary.WikipediaClient
 import app.audioflix.update.UpdateManager
@@ -44,13 +51,29 @@ class AppContainer(context: Context) {
 
   val settings = Settings(prefs)
   val database = LibraryDatabase.create(context)
-  val library = LibraryRepository(context, database.libraryDao(), settings, DownloadQuota(prefs))
+  val library = LibraryRepository(context, database.libraryDao(), settings, DownloadQuota(prefs), ChapterReader(httpClient))
 
   val providers = ProviderRegistry(
-    listOf(AudioVaultProvider(httpClient, cookieJar, prefs)),
+    listOf(
+      AudioVaultProvider(httpClient, cookieJar, prefs),
+      GoogleDriveProvider(httpClient, prefs),
+    ),
   )
 
-  val player = PlayerConnection(context, library, settings, appScope)
+  /** Shared Google Drive folders, which Browse shows next to the catalog. */
+  val drive: GoogleDriveProvider get() = providers[GoogleDriveProvider.ID] as GoogleDriveProvider
+
+  val player = PlayerConnection(context, library, providers, settings, appScope)
+
+  /** Recently streamed audio, shared by every playback session (a cache directory has one owner). */
+  @OptIn(UnstableApi::class)
+  val streamCache: SimpleCache by lazy {
+    SimpleCache(
+      File(context.cacheDir, "streams"),
+      LeastRecentlyUsedCacheEvictor(STREAM_CACHE_BYTES),
+      StandaloneDatabaseProvider(context),
+    )
+  }
 
   val updates = UpdateManager(context, settings, apiClient, appScope)
 
@@ -58,3 +81,5 @@ class AppContainer(context: Context) {
 }
 
 val Context.container: AppContainer get() = (applicationContext as AudioFlixApp).container
+
+private const val STREAM_CACHE_BYTES = 256L * 1024 * 1024

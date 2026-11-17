@@ -2,6 +2,8 @@ package app.audioflix.provider.audiovault
 
 import android.content.SharedPreferences
 import app.audioflix.net.PersistentCookieJar
+import app.audioflix.net.contentRangeStart
+import app.audioflix.net.contentRangeTotal
 import app.audioflix.net.await
 import app.audioflix.provider.AuthRequiredException
 import app.audioflix.provider.CatalogPage
@@ -129,9 +131,9 @@ class AudioVaultProvider(
       val body = response.body ?: throw IOException("Empty response")
       val partial = response.code == 206
       val contentRange = response.header("Content-Range")
-      val offset = if (partial) parseRangeStart(contentRange) ?: 0L else 0L
+      val offset = if (partial) contentRangeStart(contentRange) ?: 0L else 0L
       val total = when {
-        partial -> parseRangeTotal(contentRange) ?: -1L
+        partial -> contentRangeTotal(contentRange) ?: -1L
         else -> body.contentLength()
       }
       val fileName = AudioVaultParser.parseFileName(response.header("Content-Disposition"))
@@ -169,12 +171,6 @@ class AudioVaultProvider(
       it.body?.string().orEmpty()
     }
   }
-
-  private fun parseRangeStart(header: String?): Long? =
-    header?.let { Regex("""bytes\s+(\d+)-""").find(it)?.groupValues?.get(1)?.toLongOrNull() }
-
-  private fun parseRangeTotal(header: String?): Long? =
-    header?.substringAfterLast('/', "")?.trim()?.toLongOrNull()
 
   companion object {
     const val ID = "audiovault"

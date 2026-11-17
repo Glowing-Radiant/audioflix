@@ -2,14 +2,19 @@ package app.audioflix.player
 
 import android.content.ComponentName
 import android.content.Context
+import android.os.Bundle
 import androidx.core.net.toUri
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import app.audioflix.data.LibraryRepository
 import app.audioflix.data.Settings
+import app.audioflix.download.MediaInstaller
+import app.audioflix.provider.ProviderRegistry
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +38,12 @@ data class PlayerUiState(
   val positionMs: Long = 0,
   val durationMs: Long = 0,
   val speed: Float = 1f,
+  /** Why playback stopped, when it failed (e.g. a stream that couldn't be loaded). */
+  val error: String? = null,
+  /** The file a chapter belongs to, when the title has several files with chapters. */
+  val partTitle: String = "",
+  /** What a track is called: "chapter", "episode" or "track". */
+  val trackNoun: String = "episode",
 ) {
   val hasMedia: Boolean get() = itemKey != null
 }
@@ -41,6 +52,7 @@ data class PlayerUiState(
 class PlayerConnection(
   private val context: Context,
   private val library: LibraryRepository,
+  private val providers: ProviderRegistry,
   private val settings: Settings,
   private val scope: CoroutineScope,
 ) {
@@ -82,12 +94,30 @@ class PlayerConnection(
         c.seekTo(index, startMs)
       } else {
         val dir = File(entry.item.localDir)
+        val provider = providers[entry.item.providerId]
+        val noun = entry.trackNoun
+        val severalFiles = entry.hasSeveralFiles
         val items = tracks.map { t ->
-          val uri = File(dir, t.relativePath).toUri()
+          // Downloaded files play from the phone; the rest stream from the provider.
+          val local = File(dir, t.relativePath)
+          val uri = local.takeIf { it.exists() }?.toUri()
+            ?: t.remoteFileId?.let { provider.streamUrl(it) }?.toUri()
+            ?: local.toUri()
           MediaItem.Builder()
             .setMediaId(MediaIds.of(itemKey, t.index))
             .setUri(uri)
             .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(uri).build())
+            .apply {
+              // A chapter plays as a slice of its file; positions are then relative to the chapter.
+              if (t.isChapter) {
+                setClippingConfiguration(
+                  MediaItem.ClippingConfiguration.Builder()
+                    .setStartPositionMs(t.startMs)
+                    .setEndPositionMs(t.endMs ?: C.TIME_END_OF_SOURCE)
+                    .build(),
+                )
+              }
+            }
             .setMediaMetadata(
               MediaMetadata.Builder()
                 .setTitle(if (tracks.size == 1) entry.item.title else t.title)
@@ -95,6 +125,8 @@ class PlayerConnection(
                 .setAlbumTitle(entry.item.title)
                 .setTrackNumber(t.index + 1)
                 .setTotalTrackCount(tracks.size)
+                .setSubtitle(if (severalFiles && t.isChapter) MediaInstaller.trackTitle(t.relativePath) else null)
+                .setExtras(Bundle().apply { putString(EXTRA_TRACK_NOUN, noun) })
                 .build(),
             )
             .build()
@@ -171,6 +203,25 @@ class PlayerConnection(
       positionMs = p.currentPosition.coerceAtLeast(0),
       durationMs = p.duration.coerceAtLeast(0),
       speed = p.playbackParameters.speed,
+      error = p.playerError?.let(::describe),
+      partTitle = meta.subtitle?.toString().orEmpty(),
+      trackNoun = meta.extras?.getString(EXTRA_TRACK_NOUN) ?: "episode",
     )
   }
+
+  private fun describe(error: PlaybackException): String = when (error.errorCode) {
+    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+    -> "Couldn't connect. Check your internet connection and press play to try again."
+    PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
+    PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE,
+    PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+    PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+    -> "Couldn't play this file. If it streams from Google Drive, Drive may be limiting it for now, " +
+      "or it is no longer shared. Try again later, or download it."
+    PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND -> "The audio file is missing from the phone. Try downloading it again."
+    else -> "Couldn't play this file (${error.errorCodeName})."
+  }
 }
+
+private const val EXTRA_TRACK_NOUN = "audioflix.trackNoun"

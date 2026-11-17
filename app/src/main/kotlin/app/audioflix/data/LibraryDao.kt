@@ -43,6 +43,9 @@ interface LibraryDao {
   @Query("UPDATE library_items SET lastPlayedAt = :at, currentTrackIndex = :trackIndex WHERE `key` = :key")
   suspend fun setPlayed(key: String, trackIndex: Int, at: Long)
 
+  @Query("UPDATE library_items SET currentTrackIndex = :trackIndex WHERE `key` = :key")
+  suspend fun setCurrentTrack(key: String, trackIndex: Int)
+
   @Query("UPDATE library_items SET finished = :finished WHERE `key` = :key")
   suspend fun setFinished(key: String, finished: Boolean)
 

@@ -66,6 +66,10 @@ import app.audioflix.provider.MediaKind
 import app.audioflix.ui.DropdownSelector
 import app.audioflix.download.QuotaStatus
 import app.audioflix.ui.LocalSnackbar
+import app.audioflix.ui.drive.AddToLibraryDialog
+import app.audioflix.ui.drive.DriveHomeContent
+import app.audioflix.ui.drive.showOutcome
+import app.audioflix.ui.library.libraryStatusLabel
 import app.audioflix.ui.spokenDuration
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -74,8 +78,10 @@ fun BrowseScreen(
   viewModel: BrowseViewModel,
   onOpenItem: (String) -> Unit,
   onSignIn: () -> Unit,
+  onOpenDriveFolder: (String) -> Unit,
 ) {
   val tab by viewModel.tab.collectAsStateWithLifecycle()
+  val source by viewModel.source.collectAsStateWithLifecycle()
   val library by viewModel.library.collectAsStateWithLifecycle()
   val snackbar = LocalSnackbar.current
   var selected by remember { mutableStateOf<CatalogItem?>(null) }
@@ -98,42 +104,85 @@ fun BrowseScreen(
           message = limitReachedText(event.providerName, event.status),
           duration = SnackbarDuration.Long,
         )
+        is BrowseEvent.OpenDriveFolder -> onOpenDriveFolder(event.folderId)
+        is BrowseEvent.DriveAdded -> showOutcome(snackbar, event.outcome, onOpenItem)
       }
     }
   }
 
+  val sourceName = { s: BrowseSource -> if (s == BrowseSource.CATALOG) viewModel.provider.displayName else viewModel.driveName }
+
   Scaffold(
-    topBar = { TopAppBar(title = { Text("Browse ${viewModel.provider.displayName}") }) },
+    topBar = { TopAppBar(title = { Text("Browse ${sourceName(source)}") }) },
   ) { padding ->
     Column(Modifier.padding(padding).fillMaxSize()) {
       DropdownSelector(
-        label = "Category",
-        options = BrowseTab.entries,
-        selected = tab,
-        optionLabel = { it.label },
-        onSelect = viewModel::selectTab,
+        label = "Source",
+        options = BrowseSource.entries,
+        selected = source,
+        optionLabel = sourceName,
+        onSelect = viewModel::selectSource,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
       )
-      val actions = RowActions(
-        onClick = { item ->
-          if (library[item.key] != null) {
-            onOpenItem(item.key)
-          } else {
-            fetchSummaryOnOpen = false
+      if (source == BrowseSource.DRIVE) {
+        val saved by viewModel.savedFolders.collectAsStateWithLifecycle()
+        val link by viewModel.driveLink.collectAsStateWithLifecycle()
+        DriveHomeContent(
+          saved = saved,
+          busy = link.busy,
+          error = link.error,
+          onOpenLink = viewModel::openDriveLink,
+          onOpenFolder = { onOpenDriveFolder(it.id) },
+          onRemoveFolder = viewModel::removeSavedFolder,
+        )
+      } else {
+        DropdownSelector(
+          label = "Category",
+          options = BrowseTab.entries,
+          selected = tab,
+          optionLabel = { it.label },
+          onSelect = viewModel::selectTab,
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        val actions = RowActions(
+          onClick = { item ->
+            if (library[item.key] != null) {
+              onOpenItem(item.key)
+            } else {
+              fetchSummaryOnOpen = false
+              selected = item
+            }
+          },
+          onViewSummary = { item ->
+            fetchSummaryOnOpen = true
             selected = item
-          }
-        },
-        onViewSummary = { item ->
-          fetchSummaryOnOpen = true
-          selected = item
-        },
-        onDownload = viewModel::download,
-      )
-      when (tab) {
-        BrowseTab.HOME -> HomeContent(viewModel, library, actions)
-        BrowseTab.MOVIES -> ListingContent(viewModel, MediaKind.MOVIE, library, actions)
-        BrowseTab.SHOWS -> ListingContent(viewModel, MediaKind.SHOW, library, actions)
+          },
+          onDownload = viewModel::download,
+        )
+        when (tab) {
+          BrowseTab.HOME -> HomeContent(viewModel, library, actions)
+          BrowseTab.MOVIES -> ListingContent(viewModel, MediaKind.MOVIE, library, actions)
+          BrowseTab.SHOWS -> ListingContent(viewModel, MediaKind.SHOW, library, actions)
+        }
       }
+    }
+  }
+
+  val driveFile by viewModel.driveFile.collectAsStateWithLifecycle()
+  driveFile?.let { choice ->
+    if (library[choice.item.key] != null) {
+      // Already added: go to it rather than asking again.
+      LaunchedEffect(choice.item.key) {
+        viewModel.dismissDriveFile()
+        onOpenItem(choice.item.key)
+      }
+    } else {
+      AddToLibraryDialog(
+        choice = choice,
+        onStream = { viewModel.streamDriveFile(choice) },
+        onDownload = { viewModel.downloadDriveFile(choice) },
+        onDismiss = viewModel::dismissDriveFile,
+      )
     }
   }
 
@@ -290,15 +339,7 @@ private fun CatalogRow(
   actions: RowActions,
 ) {
   val status = inLibrary?.item
-  val statusText = when (status?.status) {
-    null -> null
-    DownloadStatus.COMPLETED -> "In library"
-    DownloadStatus.QUEUED -> "Waiting to download"
-    DownloadStatus.DOWNLOADING ->
-      if (status.totalBytes > 0) "Downloading ${status.bytesDownloaded * 100 / status.totalBytes}%" else "Downloading"
-    DownloadStatus.EXTRACTING -> "Unpacking"
-    DownloadStatus.FAILED -> "Download failed"
-  }
+  val statusText = inLibrary?.let(::libraryStatusLabel)
   ListItem(
     modifier = Modifier
       .clickable(onClickLabel = if (status == null) "Details and download" else "Open in library") {
@@ -334,7 +375,7 @@ private fun CatalogRow(
     trailingContent = {
       when (status?.status) {
         null -> Icon(Icons.Filled.Download, contentDescription = null)
-        DownloadStatus.COMPLETED -> Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+        DownloadStatus.COMPLETED, DownloadStatus.ONLINE -> Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
         DownloadStatus.FAILED -> Icon(Icons.Filled.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error)
         else -> CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
       }

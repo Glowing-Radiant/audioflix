@@ -11,19 +11,30 @@ import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import app.audioflix.AudioFlixApp
 import app.audioflix.data.DownloadStatus
+import app.audioflix.data.LibraryItem
+import app.audioflix.data.Track
 import app.audioflix.provider.AuthRequiredException
+import app.audioflix.provider.CatalogProvider
+import app.audioflix.provider.DownloadStream
 import app.audioflix.provider.MediaKind
+import app.audioflix.provider.RemoteFile
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 /**
- * Downloads one library item to its directory, resuming a partial file when the server allows,
- * then unpacks it and records its tracks.
+ * Downloads one library item to its directory, resuming partial files when the server allows,
+ * then unpacks it and records its tracks. An item is either one file (a movie, or a zip of
+ * episodes) or, for folder-based providers, several files kept in their folder layout.
  */
 class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
   private val container = (context.applicationContext as AudioFlixApp).container
@@ -32,60 +43,39 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
   override suspend fun doWork(): Result {
     val key = inputData.getString(KEY_ITEM) ?: return Result.failure()
     val item = dao.getItem(key) ?: return Result.success() // deleted meanwhile
-    if (item.status == DownloadStatus.COMPLETED) return Result.success()
+    if (item.status == DownloadStatus.COMPLETED || item.status == DownloadStatus.ONLINE) return Result.success()
 
     val notificationId = key.hashCode()
     runCatching { setForeground(foregroundInfo(notificationId, item.title, 0, 0)) }
 
     val dir = File(item.localDir).apply { mkdirs() }
-    val part = File(dir, MediaInstaller.PART_FILE)
     return try {
       dao.setStatus(key, DownloadStatus.DOWNLOADING)
       val provider = container.providers[item.providerId]
-      val resumeFrom = if (part.exists()) part.length() else 0L
-
-      val stream = provider.openDownload(item.remoteId, resumeFrom)
-      val fileName = stream.fileName
-      stream.use {
-        withContext(Dispatchers.IO) {
-          val append = stream.offset > 0 && stream.offset == resumeFrom
-          var downloaded = if (append) resumeFrom else 0L
-          val total = stream.totalBytes
-          dao.setProgress(key, downloaded, total)
-          var lastReport = 0L
-          FileOutputStream(part, append).use { out ->
-            val buffer = ByteArray(64 * 1024)
-            while (true) {
-              ensureActive()
-              val n = stream.input.read(buffer)
-              if (n < 0) break
-              out.write(buffer, 0, n)
-              downloaded += n
-              val now = System.currentTimeMillis()
-              if (now - lastReport > 750) {
-                lastReport = now
-                dao.setProgress(key, downloaded, total)
-                runCatching { setForeground(foregroundInfo(notificationId, item.title, downloaded, total)) }
-              }
-            }
-          }
-          dao.setProgress(key, downloaded, total)
-          if (total > 0 && downloaded < total) throw IOException("Connection closed before the download finished")
-        }
+      val files = provider.files(item.remoteId)
+      val singleFileName = if (files == null) {
+        downloadSingle(item, provider, dir, notificationId)
+      } else {
+        downloadFiles(item, provider, files, dir, notificationId)
+        null
       }
 
       if (dao.getItem(key) == null) return Result.success() // deleted while downloading
       dao.setStatus(key, DownloadStatus.EXTRACTING)
       val tracks = withContext(Dispatchers.IO) {
-        val archive = MediaInstaller.install(part, dir, fileName, item.title)
-        if (item.kind == null) dao.setKind(key, if (archive) MediaKind.SHOW else MediaKind.MOVIE)
+        if (files == null) {
+          val archive = MediaInstaller.install(File(dir, MediaInstaller.PART_FILE), dir, singleFileName, item.title)
+          if (item.kind == null) dao.setKind(key, if (archive) MediaKind.SHOW else MediaKind.MOVIE)
+        } else {
+          MediaInstaller.extractArchives(dir)
+        }
         MediaInstaller.scanTracks(dir, key)
       }
       if (tracks.isEmpty()) {
         dao.setStatus(key, DownloadStatus.FAILED, "The download didn't contain any audio files")
         return Result.failure()
       }
-      dao.replaceTracks(key, tracks)
+      saveTracks(item, tracks, files)
       dao.setStatus(key, DownloadStatus.COMPLETED)
       Result.success()
     } catch (e: CancellationException) {
@@ -103,6 +93,129 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
         Result.failure()
       }
     }
+  }
+
+  /** Downloads the item's single file to [MediaInstaller.PART_FILE]; returns the file's name. */
+  private suspend fun downloadSingle(item: LibraryItem, provider: CatalogProvider, dir: File, notificationId: Int): String? {
+    val part = File(dir, MediaInstaller.PART_FILE)
+    val resumeFrom = if (part.exists()) part.length() else 0L
+    val stream = provider.openDownload(item.remoteId, resumeFrom)
+    stream.use {
+      copyToPart(stream, part, resumeFrom) { downloaded, total -> report(item, notificationId, downloaded, total) }
+    }
+    return stream.fileName
+  }
+
+  /**
+   * Downloads each of [files] into its place under [dir]. Finished files are kept between attempts,
+   * so a retry only fetches what's missing.
+   */
+  private suspend fun downloadFiles(
+    item: LibraryItem,
+    provider: CatalogProvider,
+    files: List<RemoteFile>,
+    dir: File,
+    notificationId: Int,
+  ) {
+    if (files.isEmpty()) throw IOException("There are no audio files here to download")
+    val root = dir.canonicalFile
+    val targets = files.map { file ->
+      val target = File(root, file.relativePath).canonicalFile
+      // Paths come from the provider; never write outside the item directory.
+      if (!target.path.startsWith(root.path + File.separator)) throw IOException("Unsafe file name: ${file.relativePath}")
+      file to target
+    }
+    val pending = targets.filter { (_, target) -> !target.exists() }
+    val doneBytes = targets.filter { (_, target) -> target.exists() }.sumOf { (_, target) -> target.length() }
+
+    // Sizes up front, so progress is for the whole title rather than restarting with each file.
+    val sizes = coroutineScope {
+      val permits = Semaphore(4)
+      pending.map { (file, _) -> async { permits.withPermit { provider.fileSize(file.id) } } }.awaitAll()
+    }
+    val total = if (sizes.all { it > 0 }) doneBytes + sizes.sum() else -1L
+
+    var finishedBytes = doneBytes
+    for ((file, target) in pending) {
+      target.parentFile?.mkdirs()
+      val part = File(target.path + PART_SUFFIX)
+      val resumeFrom = if (part.exists()) part.length() else 0L
+      val stream = provider.openDownload(file.id, resumeFrom)
+      val written = stream.use {
+        copyToPart(stream, part, resumeFrom) { downloaded, _ ->
+          report(item, notificationId, finishedBytes + downloaded, total)
+        }
+      }
+      if (!part.renameTo(target)) throw IOException("Couldn't move ${target.name} into place")
+      finishedBytes += written
+    }
+    report(item, notificationId, finishedBytes, total, force = true)
+  }
+
+  private var lastReport = 0L
+
+  private suspend fun report(item: LibraryItem, notificationId: Int, downloaded: Long, total: Long, force: Boolean = false) {
+    val now = System.currentTimeMillis()
+    if (!force && now - lastReport < 750) return
+    lastReport = now
+    dao.setProgress(item.key, downloaded, total)
+    runCatching { setForeground(foregroundInfo(notificationId, item.title, downloaded, total)) }
+  }
+
+  /**
+   * Writes [stream] to [part], appending when the server resumed at [resumeFrom]. Returns the size
+   * of [part] when done.
+   */
+  private suspend fun copyToPart(
+    stream: DownloadStream,
+    part: File,
+    resumeFrom: Long,
+    onProgress: suspend (downloaded: Long, total: Long) -> Unit,
+  ): Long = withContext(Dispatchers.IO) {
+    val append = stream.offset > 0 && stream.offset == resumeFrom
+    var downloaded = if (append) resumeFrom else 0L
+    val total = stream.totalBytes
+    onProgress(downloaded, total)
+    FileOutputStream(part, append).use { out ->
+      val buffer = ByteArray(64 * 1024)
+      while (true) {
+        ensureActive()
+        val n = stream.input.read(buffer)
+        if (n < 0) break
+        out.write(buffer, 0, n)
+        downloaded += n
+        onProgress(downloaded, total)
+      }
+    }
+    if (total > 0 && downloaded < total) throw IOException("Connection closed before the download finished")
+    downloaded
+  }
+
+  /**
+   * Records the downloaded tracks. Listening progress made while streaming carries over to the
+   * same files, and tracks keep their provider ids so they can still be matched later.
+   */
+  private suspend fun saveTracks(item: LibraryItem, scanned: List<Track>, files: List<RemoteFile>?) {
+    val old = dao.get(item.key)?.tracks.orEmpty()
+    // A file can hold several tracks (chapters), so tracks are matched by file and start.
+    val oldByPath = old.associateBy { it.relativePath to it.startMs }
+    val fileIds = files.orEmpty().associate { it.relativePath to it.id }
+    val tracks = scanned.map { track ->
+      val previous = oldByPath[track.relativePath to track.startMs]
+      track.copy(
+        positionMs = previous?.positionMs ?: 0,
+        completed = previous?.completed ?: false,
+        durationMs = track.durationMs.takeIf { it > 0 } ?: previous?.durationMs ?: 0,
+        remoteFileId = fileIds[track.relativePath],
+      )
+    }
+    dao.replaceTracks(item.key, tracks)
+    // Zips can add tracks, so the one to resume may have moved.
+    val current = old.firstOrNull { it.index == item.currentTrackIndex }
+    val newIndex = current?.let { c ->
+      tracks.firstOrNull { it.relativePath == c.relativePath && it.startMs == c.startMs }?.index
+    }
+    if (newIndex != null && newIndex != item.currentTrackIndex) dao.setCurrentTrack(item.key, newIndex)
   }
 
   private fun foregroundInfo(id: Int, title: String, downloaded: Long, total: Long): ForegroundInfo {
@@ -133,5 +246,6 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
     const val TAG = "download"
     private const val CHANNEL = "downloads"
     private const val MAX_RETRIES = 3
+    const val PART_SUFFIX = ".part"
   }
 }

@@ -42,9 +42,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
@@ -95,9 +97,22 @@ fun PlayerScreen(onBack: () -> Unit, onOpenItem: (String) -> Unit) {
         textAlign = TextAlign.Center,
         modifier = Modifier.semantics { heading() },
       )
+      val noun = state.trackNoun
       if (state.trackCount > 1) {
+        if (state.partTitle.isNotEmpty()) {
+          Text(state.partTitle, style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center)
+        }
         Text(state.trackTitle, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
-        Text("Episode ${state.trackIndex + 1} of ${state.trackCount}", style = MaterialTheme.typography.labelLarge)
+        Text(
+          "${noun.replaceFirstChar(Char::uppercase)} ${state.trackIndex + 1} of ${state.trackCount}",
+          style = MaterialTheme.typography.labelLarge,
+        )
+      }
+      // Announced as soon as playback fails, e.g. when a stream can't be loaded.
+      Box(Modifier.semantics { liveRegion = LiveRegionMode.Assertive }) {
+        state.error?.let {
+          Text(it, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+        }
       }
       Spacer(Modifier.weight(1f))
 
@@ -109,7 +124,7 @@ fun PlayerScreen(onBack: () -> Unit, onOpenItem: (String) -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
       ) {
         IconButton(onClick = player::previous, modifier = Modifier.size(56.dp)) {
-          Icon(Icons.Filled.SkipPrevious, contentDescription = if (state.trackCount > 1) "Previous episode" else "Restart")
+          Icon(Icons.Filled.SkipPrevious, contentDescription = if (state.trackCount > 1) "Previous $noun" else "Restart")
         }
         IconButton(onClick = player::seekBack, modifier = Modifier.size(56.dp)) {
           Icon(Icons.Filled.Replay10, contentDescription = "Back ${PlaybackService.SEEK_BACK_MS / 1000} seconds")
@@ -129,13 +144,13 @@ fun PlayerScreen(onBack: () -> Unit, onOpenItem: (String) -> Unit) {
           enabled = state.trackIndex < state.trackCount - 1,
           modifier = Modifier.size(56.dp),
         ) {
-          Icon(Icons.Filled.SkipNext, contentDescription = "Next episode")
+          Icon(Icons.Filled.SkipNext, contentDescription = "Next $noun")
         }
       }
 
       Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         SpeedButton(state.speed, onSelect = player::setSpeed)
-        state.itemKey?.let { key -> OutlinedButton(onClick = { onOpenItem(key) }) { Text("Episodes and details") } }
+        state.itemKey?.let { key -> OutlinedButton(onClick = { onOpenItem(key) }) { Text("${noun.replaceFirstChar(Char::uppercase)}s and details") } }
       }
       Spacer(Modifier.height(8.dp))
     }

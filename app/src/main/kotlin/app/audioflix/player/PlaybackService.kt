@@ -2,11 +2,18 @@ package app.audioflix.player
 
 import android.app.PendingIntent
 import android.content.Intent
+import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import app.audioflix.MainActivity
@@ -28,6 +35,7 @@ import kotlinx.coroutines.sync.withLock
  * written to the library while playing, on pause and on track changes, so progress is kept even
  * when the UI is gone.
  */
+@OptIn(UnstableApi::class)
 class PlaybackService : MediaSessionService() {
   private var session: MediaSession? = null
   private lateinit var player: ExoPlayer
@@ -43,6 +51,7 @@ class PlaybackService : MediaSessionService() {
   override fun onCreate() {
     super.onCreate()
     player = ExoPlayer.Builder(this)
+      .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory()))
       .setAudioAttributes(
         AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(),
         /* handleAudioFocus = */ true,
@@ -76,6 +85,20 @@ class PlaybackService : MediaSessionService() {
   }
 
   override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+
+  /**
+   * Local files are read directly; streams go through a disk cache. Chapters play as separate
+   * slices of one file, and each slice reads the file's index (often megabytes, at the end of an
+   * audiobook), so without the cache every chapter would download it again.
+   */
+  private fun dataSourceFactory(): DataSource.Factory {
+    val http = DefaultHttpDataSource.Factory().setAllowCrossProtocolRedirects(true)
+    val cached = CacheDataSource.Factory()
+      .setCache(container.streamCache)
+      .setUpstreamDataSourceFactory(http)
+      .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+    return DefaultDataSource.Factory(this, cached)
+  }
 
   override fun onDestroy() {
     snapshot()

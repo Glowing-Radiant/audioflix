@@ -52,10 +52,10 @@ class LibraryViewModel(private val container: AppContainer) : ViewModel() {
     val item = entry.item
     return when (f) {
       LibraryFilter.ALL -> true
-      LibraryFilter.IN_PROGRESS -> item.status == DownloadStatus.COMPLETED && !item.finished && entry.listenedMs > 0
+      LibraryFilter.IN_PROGRESS -> entry.playable && !item.finished && entry.listenedMs > 0
       LibraryFilter.MOVIES -> item.kind == MediaKind.MOVIE
       LibraryFilter.SHOWS -> item.kind == MediaKind.SHOW
-      LibraryFilter.DOWNLOADS -> item.status != DownloadStatus.COMPLETED
+      LibraryFilter.DOWNLOADS -> item.status != DownloadStatus.COMPLETED && item.status != DownloadStatus.ONLINE
       LibraryFilter.FINISHED -> item.finished
     }
   }

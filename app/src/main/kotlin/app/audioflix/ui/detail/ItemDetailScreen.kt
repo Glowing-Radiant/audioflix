@@ -37,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,15 +57,19 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.audioflix.AppContainer
 import app.audioflix.container
+import app.audioflix.data.DownloadResult
 import app.audioflix.data.DownloadStatus
 import app.audioflix.data.LibraryItemWithTracks
 import app.audioflix.data.Track
+import app.audioflix.download.MediaInstaller
 import app.audioflix.player.PlayerUiState
-import app.audioflix.provider.MediaKind
+import app.audioflix.ui.LocalSnackbar
 import app.audioflix.ui.browse.Loading
+import app.audioflix.ui.browse.limitReachedText
 import app.audioflix.ui.formatDuration
 import app.audioflix.ui.library.downloadPercent
 import app.audioflix.ui.library.kindLabel
+import app.audioflix.ui.library.listeningSummary
 import app.audioflix.ui.library.statusSummary
 import app.audioflix.ui.spokenDuration
 import kotlinx.coroutines.flow.SharingStarted
@@ -84,6 +89,20 @@ class ItemDetailViewModel(private val container: AppContainer, val itemKey: Stri
   fun togglePlayPause() = container.player.togglePlayPause()
 
   fun retry() = viewModelScope.launch { container.library.retry(itemKey) }
+
+  /** Name of the service the item comes from, e.g. "Google Drive". */
+  fun providerName(providerId: String): String = container.providers[providerId].displayName
+
+  /** Downloads a streamed item; returns a message when the provider's daily limit stops it. */
+  fun download(onMessage: (String) -> Unit) = viewModelScope.launch {
+    val providerId = entry.value?.item?.providerId ?: return@launch
+    val provider = container.providers[providerId]
+    val result = container.library.download(itemKey, provider.dailyDownloadLimit)
+    if (result is DownloadResult.LimitReached) onMessage(limitReachedText(provider.displayName, result.status))
+  }
+
+  /** Stops or removes the download but keeps the item, which goes back to streaming. */
+  fun removeDownload() = viewModelScope.launch { container.library.removeDownload(itemKey) }
 
   fun setFinished(finished: Boolean) = viewModelScope.launch { container.library.setFinished(itemKey, finished) }
 
@@ -109,8 +128,10 @@ fun ItemDetailScreen(
   val viewModel: ItemDetailViewModel = viewModel(key = itemKey) { ItemDetailViewModel(container, itemKey) }
   val entry by viewModel.entry.collectAsStateWithLifecycle()
   val player by viewModel.player.collectAsStateWithLifecycle()
+  val snackbar = LocalSnackbar.current
+  val scope = rememberCoroutineScope()
   var menuOpen by remember { mutableStateOf(false) }
-  var confirmDelete by remember { mutableStateOf(false) }
+  var confirm by remember { mutableStateOf<Confirm?>(null) }
 
   Scaffold(
     topBar = {
@@ -124,7 +145,7 @@ fun ItemDetailScreen(
           Box {
             IconButton(onClick = { menuOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More options") }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-              if (current.item.status == DownloadStatus.COMPLETED) {
+              if (current.playable) {
                 DropdownMenuItem(
                   text = { Text(if (current.item.finished) "Mark as not finished" else "Mark as finished") },
                   onClick = {
@@ -133,13 +154,15 @@ fun ItemDetailScreen(
                   },
                 )
               }
-              DropdownMenuItem(
-                text = { Text(if (current.item.status == DownloadStatus.COMPLETED) "Delete from library" else "Cancel download") },
-                onClick = {
-                  menuOpen = false
-                  confirmDelete = true
-                },
-              )
+              confirmOptions(current).forEach { option ->
+                DropdownMenuItem(
+                  text = { Text(option.menuLabel) },
+                  onClick = {
+                    menuOpen = false
+                    confirm = option
+                  },
+                )
+              }
             }
           }
         },
@@ -153,53 +176,123 @@ fun ItemDetailScreen(
     }
     LazyColumn(Modifier.padding(padding).fillMaxSize()) {
       item(key = "header") {
-        Header(current, player, viewModel, onOpenPlayer, onSignIn)
+        Header(current, player, viewModel, onOpenPlayer, onSignIn, onMessage = { message ->
+          scope.launch { snackbar.showSnackbar(message) }
+        })
       }
-      if (current.item.status == DownloadStatus.COMPLETED) {
+      if (current.playable) {
         item(key = "tracks-heading") {
           val count = current.tracks.size
           Text(
-            if (current.item.kind == MediaKind.SHOW || count > 1) "Episodes ($count)" else "Audio",
+            if (count <= 1) "Audio" else "${current.trackNoun.replaceFirstChar(Char::uppercase)}s ($count)",
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.padding(16.dp).semantics { heading() },
           )
           HorizontalDivider()
         }
-        items(current.sortedTracks, key = { it.index }) { track ->
-          TrackRow(
-            track = track,
-            isCurrent = player.itemKey == current.item.key && player.trackIndex == track.index,
-            isPlaying = player.isPlaying,
-            onPlay = {
-              viewModel.play(track.index)
-              onOpenPlayer()
-            },
-            onSetCompleted = { viewModel.setTrackCompleted(track.index, it) },
-          )
+        val tracks = current.sortedTracks
+        val groupByFile = current.hasSeveralFiles && current.hasChapters
+        tracks.forEachIndexed { i, track ->
+          // Chapters of several books (files) are easy to tell apart, and to jump between by heading.
+          if (groupByFile && (i == 0 || tracks[i - 1].relativePath != track.relativePath)) {
+            item(key = "file:${track.index}") {
+              Text(
+                MediaInstaller.trackTitle(track.relativePath),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp).semantics { heading() },
+              )
+            }
+          }
+          item(key = track.index) {
+            TrackRow(
+              track = track,
+              isCurrent = player.itemKey == current.item.key && player.trackIndex == track.index,
+              isPlaying = player.isPlaying,
+              onPlay = {
+                viewModel.play(track.index)
+                onOpenPlayer()
+              },
+              onSetCompleted = { viewModel.setTrackCompleted(track.index, it) },
+            )
+          }
         }
       }
     }
   }
 
-  if (confirmDelete) {
-    val downloaded = entry?.item?.status == DownloadStatus.COMPLETED
+  confirm?.let { option ->
     AlertDialog(
-      onDismissRequest = { confirmDelete = false },
-      title = { Text(if (downloaded) "Delete from library?" else "Cancel download?") },
-      text = {
-        Text(
-          if (downloaded) "The downloaded audio and your listening progress will be removed from this device."
-          else "The partially downloaded file will be removed.",
-        )
-      },
+      onDismissRequest = { confirm = null },
+      title = { Text(option.title) },
+      text = { Text(option.body) },
       confirmButton = {
         TextButton(onClick = {
-          confirmDelete = false
-          viewModel.delete(onBack)
-        }) { Text(if (downloaded) "Delete" else "Cancel download") }
+          confirm = null
+          if (option.keepsItem) viewModel.removeDownload() else viewModel.delete(onBack)
+        }) { Text(option.confirmLabel) }
       },
-      dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Keep") } },
+      dismissButton = { TextButton(onClick = { confirm = null }) { Text("Keep") } },
     )
+  }
+}
+
+/** A destructive menu action and the wording of its confirmation. */
+private enum class Confirm(
+  val menuLabel: String,
+  val title: String,
+  val body: String,
+  val confirmLabel: String,
+  /** True when the item stays in the library (streaming); false when it's deleted. */
+  val keepsItem: Boolean,
+) {
+  DELETE(
+    "Delete from library",
+    "Delete from library?",
+    "The downloaded audio and your listening progress will be removed from this device.",
+    "Delete",
+    keepsItem = false,
+  ),
+  CANCEL(
+    "Cancel download",
+    "Cancel download?",
+    "The partially downloaded files will be removed.",
+    "Cancel download",
+    keepsItem = false,
+  ),
+  CANCEL_KEEP_STREAMING(
+    "Cancel download",
+    "Cancel download?",
+    "The partially downloaded files will be removed. The title stays in your library for streaming.",
+    "Cancel download",
+    keepsItem = true,
+  ),
+  REMOVE_DOWNLOAD(
+    "Remove download, keep streaming",
+    "Remove the download?",
+    "The audio files will be removed from this device. The title stays in your library and streams " +
+      "from the internet, with your listening progress kept.",
+    "Remove download",
+    keepsItem = true,
+  ),
+  REMOVE(
+    "Remove from library",
+    "Remove from library?",
+    "The title and your listening progress will be removed from your library.",
+    "Remove",
+    keepsItem = false,
+  ),
+}
+
+private fun confirmOptions(entry: LibraryItemWithTracks): List<Confirm> {
+  val status = entry.item.status
+  if (!entry.streamable) {
+    return listOf(if (status == DownloadStatus.COMPLETED) Confirm.DELETE else Confirm.CANCEL)
+  }
+  return when {
+    status == DownloadStatus.COMPLETED -> listOf(Confirm.REMOVE_DOWNLOAD, Confirm.DELETE)
+    entry.downloading -> listOf(Confirm.CANCEL_KEEP_STREAMING, Confirm.REMOVE)
+    else -> listOf(Confirm.REMOVE)
   }
 }
 
@@ -210,6 +303,7 @@ private fun Header(
   viewModel: ItemDetailViewModel,
   onOpenPlayer: () -> Unit,
   onSignIn: () -> Unit,
+  onMessage: (String) -> Unit,
 ) {
   val item = entry.item
   Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -217,28 +311,37 @@ private fun Header(
     kindLabel(item.kind)?.let { Text(it, style = MaterialTheme.typography.labelLarge) }
     item.description?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
 
+    if (entry.playable) {
+      Text(listeningSummary(entry), style = MaterialTheme.typography.bodyLarge)
+      if (entry.totalDurationMs > 0) {
+        Text(
+          "Total length ${formatDuration(entry.totalDurationMs)}",
+          modifier = Modifier.clearAndSetSemantics {
+            contentDescription = "Total length ${spokenDuration(entry.totalDurationMs)}"
+          },
+        )
+      }
+      val isCurrent = player.itemKey == item.key
+      Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Button(onClick = {
+          if (isCurrent) viewModel.togglePlayPause() else viewModel.play()
+          if (!isCurrent || !player.isPlaying) onOpenPlayer()
+        }) {
+          Icon(Icons.Filled.PlayArrow, contentDescription = null)
+          Text(playButtonLabel(entry, player), modifier = Modifier.padding(start = 8.dp))
+        }
+        if (isCurrent) OutlinedButton(onClick = onOpenPlayer) { Text("Open player") }
+      }
+    }
+
     when (item.status) {
-      DownloadStatus.COMPLETED -> {
-        Text(statusSummary(entry), style = MaterialTheme.typography.bodyLarge)
-        if (entry.totalDurationMs > 0) {
-          Text(
-            "Total length ${formatDuration(entry.totalDurationMs)}",
-            modifier = Modifier.clearAndSetSemantics {
-              contentDescription = "Total length ${spokenDuration(entry.totalDurationMs)}"
-            },
-          )
-        }
-        val isCurrent = player.itemKey == item.key
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-          Button(onClick = {
-            if (isCurrent) viewModel.togglePlayPause() else viewModel.play()
-            if (!isCurrent || !player.isPlaying) onOpenPlayer()
-          }) {
-            Icon(Icons.Filled.PlayArrow, contentDescription = null)
-            Text(playButtonLabel(entry, player), modifier = Modifier.padding(start = 8.dp))
-          }
-          if (isCurrent) OutlinedButton(onClick = onOpenPlayer) { Text("Open player") }
-        }
+      DownloadStatus.COMPLETED -> {}
+      DownloadStatus.ONLINE -> {
+        Text(
+          "Plays from ${viewModel.providerName(item.providerId)} over the internet. Download it to listen offline.",
+          style = MaterialTheme.typography.bodyMedium,
+        )
+        OutlinedButton(onClick = { viewModel.download(onMessage) }) { Text("Download for offline listening") }
       }
       DownloadStatus.FAILED -> {
         Text(statusSummary(entry), color = MaterialTheme.colorScheme.error)
@@ -273,7 +376,7 @@ private fun playButtonLabel(entry: LibraryItemWithTracks, player: PlayerUiState)
   if (entry.listenedMs <= 0) return "Play"
   val track = entry.sortedTracks.getOrNull(item.currentTrackIndex) ?: return "Resume"
   val at = formatDuration(track.positionMs)
-  return if (entry.tracks.size > 1) "Resume episode ${track.index + 1} at $at" else "Resume at $at"
+  return if (entry.tracks.size > 1) "Resume ${entry.trackNoun} ${track.index + 1} at $at" else "Resume at $at"
 }
 
 @Composable
