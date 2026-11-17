@@ -139,4 +139,5 @@ dependencies {
   implementation(libs.kotlinx.coroutines.guava)
 
   testImplementation(libs.junit)
+  testImplementation(libs.okhttp.mockwebserver)
 }

@@ -9,6 +9,9 @@ the code changed. `scripts/release.sh` turns Unreleased into the new version's s
 
 ## [Unreleased]
 
+### Changed
+- App updates download much faster: the update now comes down over several connections at once, and if a download is interrupted, trying again carries on where it stopped instead of starting over.
+
 ## [0.3.0] - 2026-11-17
 
 ### Added

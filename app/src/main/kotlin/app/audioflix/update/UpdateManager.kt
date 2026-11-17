@@ -6,11 +6,13 @@ import android.content.Intent
 import android.content.pm.PackageInstaller
 import app.audioflix.BuildConfig
 import app.audioflix.data.Settings
+import app.audioflix.net.RangedDownloader
 import app.audioflix.net.await
 import java.io.File
 import java.io.IOException
 import java.net.UnknownHostException
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -65,6 +67,7 @@ class UpdateManager(
   val installed: AppVersion = AppVersion.parse(BuildConfig.VERSION_NAME) ?: AppVersion(0, 0, 0)
 
   private val downloadDir = File(context.cacheDir, "updates")
+  private val downloader = RangedDownloader(http)
 
   private val _state = MutableStateFlow(UpdateState())
   val state: StateFlow<UpdateState> = _state.asStateFlow()
@@ -151,12 +154,16 @@ class UpdateManager(
     _confirmations.trySend(intent)
   }
 
-  /** Deletes downloaded APKs that are no newer than the installed app, plus partial downloads. */
+  /**
+   * Deletes downloaded APKs that are no newer than the installed app. Partial downloads of a newer
+   * version are kept, so the next try carries on from them.
+   */
   fun cleanUpDownloads() {
     scope.launch(Dispatchers.IO) {
       downloadDir.listFiles()?.forEach { file ->
-        val version = AppVersion.parse(file.name.removePrefix("audioflix-").removeSuffix(".apk"))
-        if (file.name.endsWith(".part") || version == null || version <= installed) file.delete()
+        val name = file.name.removeSuffix(".done").removeSuffix(".part")
+        val version = AppVersion.parse(name.removePrefix("audioflix-").removeSuffix(".apk"))
+        if (version == null || version <= installed) file.delete()
       }
     }
   }
@@ -189,40 +196,35 @@ class UpdateManager(
     val part = File(downloadDir, target.name + ".part")
     _state.update { it.copy(install = InstallStep.Downloading(0, release.apkSize)) }
 
-    http.newCall(Request.Builder().url(release.apkUrl).build()).await().use { response ->
-      if (!response.isSuccessful) throw IOException("The download failed with HTTP ${response.code}.")
-      val body = response.body ?: throw IOException("The download was empty.")
-      val total = body.contentLength().takeIf { it > 0 } ?: release.apkSize
-      val digest = MessageDigest.getInstance("SHA-256")
-      var read = 0L
-      var lastReport = 0L
-      body.byteStream().use { input ->
-        part.outputStream().use { out ->
-          val buffer = ByteArray(64 * 1024)
-          while (true) {
-            ensureActive()
-            val n = input.read(buffer)
-            if (n < 0) break
-            out.write(buffer, 0, n)
-            digest.update(buffer, 0, n)
-            read += n
-            val now = System.currentTimeMillis()
-            if (now - lastReport > 250) {
-              lastReport = now
-              _state.update { it.copy(install = InstallStep.Downloading(read, total)) }
-            }
-          }
-        }
+    val lastReport = AtomicLong(0)
+    downloader.download(release.apkUrl, part) { done, reported ->
+      val total = reported.takeIf { it > 0 } ?: release.apkSize
+      val now = System.currentTimeMillis()
+      val last = lastReport.get()
+      if (done == total || (now - last > 250 && lastReport.compareAndSet(last, now))) {
+        _state.update { it.copy(install = InstallStep.Downloading(done, total)) }
       }
-      if (total > 0 && read < total) throw IOException("The connection closed before the download finished.")
-      val sha256 = digest.digest().joinToString("") { "%02x".format(it) }
-      if (release.apkSha256 != null && release.apkSha256 != sha256) {
-        part.delete()
-        throw IOException("The downloaded update is damaged. Try again.")
-      }
+    }
+    ensureActive()
+    if (release.apkSha256 != null && release.apkSha256 != sha256(part)) {
+      part.delete()
+      throw IOException("The downloaded update is damaged. Try again.")
     }
     if (!part.renameTo(target)) throw IOException("Couldn't save the downloaded update.")
     target
+  }
+
+  private fun sha256(file: File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    file.inputStream().use { input ->
+      val buffer = ByteArray(64 * 1024)
+      while (true) {
+        val n = input.read(buffer)
+        if (n < 0) break
+        digest.update(buffer, 0, n)
+      }
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }
   }
 
   private fun commitSession(apk: File) {
