@@ -16,6 +16,7 @@ import app.audioflix.download.NaturalOrder
 import app.audioflix.download.QuotaStatus
 import app.audioflix.provider.CatalogItem
 import app.audioflix.provider.CatalogProvider
+import app.audioflix.provider.ProviderRegistry
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -47,6 +48,7 @@ class LibraryRepository(
   private val settings: Settings,
   val quota: DownloadQuota,
   private val chapters: ChapterReader,
+  private val providers: ProviderRegistry,
 ) {
   private val workManager get() = WorkManager.getInstance(context)
 
@@ -110,13 +112,13 @@ class LibraryRepository(
    */
   suspend fun addForStreaming(item: CatalogItem, provider: CatalogProvider): StreamResult {
     if (dao.getItem(item.key) != null) return StreamResult.AlreadyInLibrary
-    val files = provider.files(item.remoteId) ?: return StreamResult.NothingToStream(0)
-    val archives = files.count { MediaInstaller.isArchiveName(it.relativePath) }
-    val audio = files
-      .filter { MediaInstaller.isAudioName(it.relativePath) && provider.streamUrl(it.id) != null }
-      .sortedWith(compareBy(NaturalOrder) { it.relativePath })
-    if (audio.isEmpty()) return StreamResult.NothingToStream(archives)
-    dao.insert(
+    val (tracks, archives) = streamTracks(item.key, item.remoteId, provider)
+    if (tracks.isEmpty()) return StreamResult.NothingToStream(archives)
+    // The title and its tracks go in together, only once every file has been looked at. Adding the
+    // title first left it empty in the library while chapters were read, and for good if that was
+    // interrupted.
+    if (dao.getItem(item.key) != null) return StreamResult.AlreadyInLibrary
+    dao.insertWithTracks(
       LibraryItem(
         key = item.key,
         providerId = item.providerId,
@@ -128,7 +130,45 @@ class LibraryRepository(
         localDir = itemDir(item.providerId, item.remoteId).path,
         addedAt = System.currentTimeMillis(),
       ),
+      tracks,
     )
+    return StreamResult.Added(tracks.size, archives)
+  }
+
+  /**
+   * Reads a streamed title's files from its provider again, keeping listening progress for files
+   * that are still there. Repairs titles that were left without tracks, and picks up files added to
+   * the folder since. Returns the number of tracks, or null when the title isn't streamed.
+   */
+  suspend fun reloadStreaming(key: String, provider: CatalogProvider): Int? {
+    val entry = dao.get(key) ?: return null
+    if (entry.item.status != DownloadStatus.ONLINE) return null
+    val (scanned, _) = streamTracks(key, entry.item.remoteId, provider)
+    if (scanned.isEmpty()) return 0
+    val oldByPath = entry.tracks.associateBy { it.relativePath to it.startMs }
+    val tracks = scanned.map { track ->
+      val previous = oldByPath[track.relativePath to track.startMs]
+      track.copy(
+        positionMs = previous?.positionMs ?: 0,
+        completed = previous?.completed ?: false,
+        durationMs = track.durationMs.takeIf { it > 0 } ?: previous?.durationMs ?: 0,
+      )
+    }
+    dao.replaceTracks(key, tracks)
+    val current = entry.tracks.firstOrNull { it.index == entry.item.currentTrackIndex }
+    val newIndex = current?.let { c -> tracks.firstOrNull { it.relativePath == c.relativePath && it.startMs == c.startMs }?.index } ?: 0
+    if (newIndex != entry.item.currentTrackIndex) dao.setCurrentTrack(key, newIndex)
+    return tracks.size
+  }
+
+  /** The tracks [remoteId] streams as, and how many zips were left out. */
+  private suspend fun streamTracks(itemKey: String, remoteId: String, provider: CatalogProvider): Pair<List<Track>, Int> {
+    val files = provider.files(remoteId) ?: return emptyList<Track>() to 0
+    val archives = files.count { MediaInstaller.isArchiveName(it.relativePath) }
+    val audio = files
+      .filter { MediaInstaller.isAudioName(it.relativePath) && provider.streamUrl(it.id) != null }
+      .sortedWith(compareBy(NaturalOrder) { it.relativePath })
+    if (audio.isEmpty()) return emptyList<Track>() to archives
     val infos = coroutineScope {
       val permits = Semaphore(4)
       audio.map { file ->
@@ -146,7 +186,7 @@ class LibraryRepository(
     audio.forEachIndexed { i, file ->
       val info = infos[i]
       tracks += MediaInstaller.tracksForFile(
-        itemKey = item.key,
+        itemKey = itemKey,
         firstIndex = tracks.size,
         relativePath = file.relativePath,
         // Unknown for other formats until played; the player fills it in then.
@@ -155,8 +195,7 @@ class LibraryRepository(
         remoteFileId = file.id,
       )
     }
-    dao.insertTracks(tracks)
-    return StreamResult.Added(tracks.size, archives)
+    return tracks to archives
   }
 
   /**
@@ -219,13 +258,16 @@ class LibraryRepository(
   }
 
   private fun enqueue(key: String, policy: ExistingWorkPolicy = ExistingWorkPolicy.REPLACE) {
+    // Keys are "<providerId>:<remoteId>". Copying from a phone folder needs no network at all.
+    val needsNetwork = runCatching { providers[key.substringBefore(':')].needsNetwork }.getOrDefault(true)
+    val network = when {
+      !needsNetwork -> NetworkType.NOT_REQUIRED
+      settings.wifiOnly.value -> NetworkType.UNMETERED
+      else -> NetworkType.CONNECTED
+    }
     val request = OneTimeWorkRequestBuilder<DownloadWorker>()
       .setInputData(workDataOf(DownloadWorker.KEY_ITEM to key))
-      .setConstraints(
-        Constraints.Builder()
-          .setRequiredNetworkType(if (settings.wifiOnly.value) NetworkType.UNMETERED else NetworkType.CONNECTED)
-          .build(),
-      )
+      .setConstraints(Constraints.Builder().setRequiredNetworkType(network).build())
       .addTag(DownloadWorker.TAG)
       .build()
     workManager.enqueueUniqueWork(workName(key), policy, request)

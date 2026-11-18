@@ -53,6 +53,18 @@ interface FolderProvider : CatalogProvider {
   /** What the link box accepts, said to the listener above it. */
   val linkHelp: String
 
+  /**
+   * True for folders on the phone itself: they're chosen with the system folder picker rather than
+   * a pasted link, "streaming" plays files in place, and "downloading" copies them into AudioFlix.
+   */
+  val isLocal: Boolean get() = false
+
+  /** What downloading is called for this provider, as a verb: "Download", or "Copy". */
+  val copyVerb: String get() = if (isLocal) "Copy" else "Download"
+
+  /** The folder a library title of this provider is, or null when it's a single file. */
+  fun folderIdOf(remoteId: String): String?
+
   /** Heading above the folders the user opened before. */
   val savedHeading: String get() = "Your folders"
 

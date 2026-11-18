@@ -2,6 +2,7 @@ package app.audioflix.player
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.os.SystemClock
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -47,6 +48,13 @@ class PlaybackService : MediaSessionService() {
   private var lastMediaId: String? = null
   private var lastPositionMs = 0L
   private var lastDurationMs = 0L
+
+  /**
+   * When playback last paused (by the listener, a call, headphones coming out), on the
+   * [SystemClock.elapsedRealtime] clock; null while playing, and after any seek or track change,
+   * which are deliberate moves that auto-rewind shouldn't undo.
+   */
+  private var pausedAt: Long? = null
 
   override fun onCreate() {
     super.onCreate()
@@ -137,12 +145,19 @@ class PlaybackService : MediaSessionService() {
         }
       }
       lastMediaId = mediaItem?.mediaId
+      pausedAt = null
       lastPositionMs = player.currentPosition
       lastDurationMs = player.duration.coerceAtLeast(0)
       save()
     }
 
     override fun onIsPlayingChanged(isPlaying: Boolean) {
+      if (isPlaying) {
+        rewindAfterPause()
+      } else if (player.playbackState == Player.STATE_READY) {
+        // Paused, or held back by a call; buffering and the end of the title aren't pauses.
+        pausedAt = SystemClock.elapsedRealtime()
+      }
       snapshot()
       save()
     }
@@ -159,10 +174,22 @@ class PlaybackService : MediaSessionService() {
       reason: Int,
     ) {
       if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+        pausedAt = null
         snapshot()
         save()
       }
     }
+  }
+
+  /** Goes back a little on resuming, per the auto-rewind setting, never past the track's start. */
+  private fun rewindAfterPause() {
+    val since = pausedAt ?: return
+    pausedAt = null
+    val back = container.settings.autoRewind.value.rewindMs(SystemClock.elapsedRealtime() - since)
+    if (back <= 0) return
+    val position = player.currentPosition
+    if (position <= 0) return
+    player.seekTo((position - back).coerceAtLeast(0))
   }
 
   private fun snapshot() {

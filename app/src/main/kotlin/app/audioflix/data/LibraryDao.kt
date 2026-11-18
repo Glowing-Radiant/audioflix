@@ -70,6 +70,13 @@ interface LibraryDao {
   @Query("UPDATE tracks SET completed = :completed, positionMs = 0 WHERE itemKey = :key")
   suspend fun setAllTracksCompleted(key: String, completed: Boolean)
 
+  /** Adds a title and its tracks together, so it never shows up in the library without them. */
+  @Transaction
+  suspend fun insertWithTracks(item: LibraryItem, tracks: List<Track>) {
+    insert(item)
+    insertTracks(tracks)
+  }
+
   @Transaction
   suspend fun replaceTracks(key: String, tracks: List<Track>) {
     deleteTracks(key)

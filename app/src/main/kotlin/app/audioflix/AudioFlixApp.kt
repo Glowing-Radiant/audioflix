@@ -19,7 +19,10 @@ import app.audioflix.player.PlayerConnection
 import app.audioflix.provider.ProviderRegistry
 import app.audioflix.provider.audiovault.AudioVaultProvider
 import app.audioflix.provider.gdrive.GoogleDriveProvider
+import app.audioflix.provider.local.LocalFolderProvider
 import app.audioflix.provider.web.WebFolderProvider
+import app.audioflix.net.RangedDownloader
+import app.audioflix.ui.folders.AddNotices
 import app.audioflix.summary.SummaryRepository
 import app.audioflix.summary.WikipediaClient
 import app.audioflix.update.UpdateManager
@@ -52,15 +55,30 @@ class AppContainer(context: Context) {
 
   val settings = Settings(prefs)
   val database = LibraryDatabase.create(context)
-  val library = LibraryRepository(context, database.libraryDao(), settings, DownloadQuota(prefs), ChapterReader(httpClient))
 
   val providers = ProviderRegistry(
     listOf(
       AudioVaultProvider(httpClient, cookieJar, prefs),
       GoogleDriveProvider(httpClient, prefs),
       WebFolderProvider(httpClient, prefs),
+      LocalFolderProvider(context, prefs),
     ),
   )
+
+  val library = LibraryRepository(
+    context,
+    database.libraryDao(),
+    settings,
+    DownloadQuota(prefs),
+    ChapterReader(context, httpClient),
+    providers,
+  )
+
+  /** Downloads titles over several connections, for providers whose faster downloads are on. */
+  val mediaDownloader = RangedDownloader(httpClient, connections = 6, chunkSize = 4L shl 20)
+
+  /** Results of adding titles, shown wherever the user is by then. */
+  val addNotices = AddNotices()
 
   val player = PlayerConnection(context, library, providers, settings, appScope)
 

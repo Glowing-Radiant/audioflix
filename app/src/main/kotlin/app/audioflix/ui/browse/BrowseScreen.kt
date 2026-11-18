@@ -68,7 +68,6 @@ import app.audioflix.download.QuotaStatus
 import app.audioflix.ui.LocalSnackbar
 import app.audioflix.ui.folders.AddToLibraryDialog
 import app.audioflix.ui.folders.FolderHomeContent
-import app.audioflix.ui.folders.showOutcome
 import app.audioflix.ui.library.libraryStatusLabel
 import app.audioflix.ui.spokenDuration
 
@@ -105,7 +104,6 @@ fun BrowseScreen(
           duration = SnackbarDuration.Long,
         )
         is BrowseEvent.OpenFolder -> onOpenFolder(event.providerId, event.folderId)
-        is BrowseEvent.Added -> showOutcome(snackbar, event.outcome, onOpenItem)
       }
     }
   }
@@ -138,6 +136,7 @@ fun BrowseScreen(
             onOpenLink = { viewModel.openLink(current.provider) },
             onOpenFolder = { onOpenFolder(current.provider.id, it.id) },
             onRemoveFolder = { viewModel.removeSavedFolder(current.provider, it) },
+            onOpenFolderId = { onOpenFolder(current.provider.id, it) },
           )
         }
         is BrowseSource.Catalog -> {
@@ -185,7 +184,7 @@ fun BrowseScreen(
     } else {
       AddToLibraryDialog(
         choice = add.choice,
-        sourceName = add.provider.displayName,
+        provider = add.provider,
         onStream = { viewModel.streamPending(add) },
         onDownload = { viewModel.downloadPending(add) },
         onDismiss = viewModel::dismissPendingAdd,

@@ -53,6 +53,19 @@ class AudioVaultProvider(
     ProviderLink("Join AudioVault on Discord", "https://discord.gg/sZ2PqF8"),
   )
 
+  override val supportsFastDownloads = true
+
+  // A small site run by volunteers: several connections are the listener's choice, not ours.
+  override val fastDownloadsDefault = false
+
+  override val fastDownloadsNote =
+    "Downloads use several connections to AudioVault at once instead of one, which can be much faster. " +
+      "AudioVault is a free site run by volunteers on donations, so this puts more load on it, and it " +
+      "may count the extra connections as extra downloads or block them. AudioFlix still counts one " +
+      "download per title against your 25 a day. If downloads start failing, turn this off."
+
+  override suspend fun rangedDownloadUrl(fileId: String): String = "$BASE_URL/download/$fileId"
+
   private val _account = MutableStateFlow(prefs.getString(KEY_ACCOUNT, null))
   override val account: StateFlow<String?> = _account.asStateFlow()
 

@@ -54,6 +54,15 @@ class GoogleDriveProvider(
     "Paste a link to a Google Drive folder or file that's shared as \"Anyone with the link\". " +
       "No Google account needed."
 
+  override val supportsFastDownloads = true
+
+  override val fastDownloadsNote =
+    "Downloads from Google Drive use several connections at once, a piece of the file on each, " +
+      "which is usually several times faster. If Drive starts refusing a file, turn this off and try again."
+
+  /** Where the file itself is served, past the virus-scan warning Drive shows for big files. */
+  override suspend fun rangedDownloadUrl(fileId: String): String? = open(fileId, range = "bytes=0-0").use { it.url }
+
   private val saved = SavedFolderStore(prefs, KEY_SAVED)
   override val savedFolders: StateFlow<List<SavedFolder>> = saved.folders
 
@@ -100,6 +109,8 @@ class GoogleDriveProvider(
 
   override fun fileItem(fileId: String, name: String) =
     CatalogItem(ID, DriveRef.File(fileId).remoteId, name.substringBeforeLast('.').ifBlank { name }, kind = null)
+
+  override fun folderIdOf(remoteId: String): String? = (DriveRef.parse(remoteId) as? DriveRef.Folder)?.id
 
   /** The name and size of a shared file, from the first byte of its download. */
   suspend fun fileInfo(fileId: String): DriveFileInfo =
@@ -169,6 +180,7 @@ class GoogleDriveProvider(
         fileName = contentDispositionFileName(response.header("Content-Disposition")),
         contentType = contentType,
         onClose = { response.close() },
+        url = response.request.url.toString(),
       )
     } catch (t: Throwable) {
       response.close()

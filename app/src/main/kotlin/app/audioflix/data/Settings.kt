@@ -12,6 +12,40 @@ class Settings(private val prefs: SharedPreferences) {
   private val _playbackSpeed = MutableStateFlow(prefs.getFloat(KEY_SPEED, 1f))
   val playbackSpeed: StateFlow<Float> = _playbackSpeed.asStateFlow()
 
+  private val fastDownloads = mutableMapOf<String, MutableStateFlow<Boolean>>()
+
+  /** Whether [providerId]'s downloads use several connections at once; [default] until changed. */
+  fun fastDownloads(providerId: String, default: Boolean): StateFlow<Boolean> = synchronized(fastDownloads) {
+    fastDownloads.getOrPut(providerId) { MutableStateFlow(prefs.getBoolean(KEY_FAST + providerId, default)) }
+  }
+
+  fun setFastDownloads(providerId: String, value: Boolean) {
+    prefs.edit().putBoolean(KEY_FAST + providerId, value).apply()
+    synchronized(fastDownloads) { fastDownloads.getOrPut(providerId) { MutableStateFlow(value) } }.value = value
+  }
+
+  private val _autoRewind = MutableStateFlow(
+    AutoRewind(
+      enabled = prefs.getBoolean(KEY_REWIND_ON, false),
+      shortSeconds = prefs.getInt(KEY_REWIND_SHORT, AutoRewind.DEFAULT_SHORT),
+      longSeconds = prefs.getInt(KEY_REWIND_LONG, AutoRewind.DEFAULT_LONG),
+      longPauseMinutes = prefs.getInt(KEY_REWIND_AFTER, AutoRewind.DEFAULT_LONG_PAUSE),
+    ),
+  )
+
+  /** Going back a little when playback resumes after a pause, so the listener can pick up the thread. */
+  val autoRewind: StateFlow<AutoRewind> = _autoRewind.asStateFlow()
+
+  fun setAutoRewind(value: AutoRewind) {
+    prefs.edit()
+      .putBoolean(KEY_REWIND_ON, value.enabled)
+      .putInt(KEY_REWIND_SHORT, value.shortSeconds)
+      .putInt(KEY_REWIND_LONG, value.longSeconds)
+      .putInt(KEY_REWIND_AFTER, value.longPauseMinutes)
+      .apply()
+    _autoRewind.value = value
+  }
+
   /** The latest version the update screen was opened for automatically, so it opens only once. */
   var updatePromptedVersion: String?
     get() = prefs.getString(KEY_UPDATE_PROMPTED, null)
@@ -40,5 +74,41 @@ class Settings(private val prefs: SharedPreferences) {
     const val KEY_SPEED = "player.speed"
     const val KEY_UPDATE_PROMPTED = "updates.promptedVersion"
     const val KEY_UPDATE_PENDING = "updates.pendingVersion"
+    const val KEY_FAST = "downloads.fast."
+    const val KEY_REWIND_ON = "player.rewind.enabled"
+    const val KEY_REWIND_SHORT = "player.rewind.shortSeconds"
+    const val KEY_REWIND_LONG = "player.rewind.longSeconds"
+    const val KEY_REWIND_AFTER = "player.rewind.longPauseMinutes"
+  }
+}
+
+/**
+ * Auto-rewind: on resuming after a pause, go back [shortSeconds], or [longSeconds] when the pause
+ * lasted [longPauseMinutes] or more.
+ */
+data class AutoRewind(
+  val enabled: Boolean = false,
+  val shortSeconds: Int = DEFAULT_SHORT,
+  val longSeconds: Int = DEFAULT_LONG,
+  val longPauseMinutes: Int = DEFAULT_LONG_PAUSE,
+) {
+  /** How far to go back after a pause of [pausedMs], in milliseconds; 0 when off. */
+  fun rewindMs(pausedMs: Long): Long = when {
+    !enabled || pausedMs < MIN_PAUSE_MS -> 0
+    pausedMs >= longPauseMinutes * 60_000L -> longSeconds * 1_000L
+    else -> shortSeconds * 1_000L
+  }
+
+  companion object {
+    const val DEFAULT_SHORT = 5
+    const val DEFAULT_LONG = 30
+    const val DEFAULT_LONG_PAUSE = 30
+
+    /** Pauses shorter than this (a quick double tap) don't rewind. */
+    const val MIN_PAUSE_MS = 1_000L
+
+    val SHORT_CHOICES = listOf(2, 3, 5, 10, 15, 20, 30)
+    val LONG_CHOICES = listOf(10, 15, 20, 30, 45, 60, 90, 120)
+    val LONG_PAUSE_CHOICES = listOf(5, 10, 15, 30, 60, 120, 240, 480)
   }
 }

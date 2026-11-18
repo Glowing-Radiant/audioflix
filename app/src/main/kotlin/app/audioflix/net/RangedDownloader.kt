@@ -28,6 +28,12 @@ import okhttp3.Response
 class HttpStatusException(val code: Int) : IOException("The download failed with HTTP $code.")
 
 /**
+ * The server sent a web page instead of the file: a sign-in page, or a warning page. Downloading
+ * the normal way (one connection, through the provider) knows what to do with those.
+ */
+class NotTheFileException : IOException("The server sent a web page instead of the file.")
+
+/**
  * Downloads one file over several connections at once, a range of it on each.
  *
  * GitHub's release download server is slow per connection from some networks. In November 2026 a
@@ -36,6 +42,8 @@ class HttpStatusException(val code: Int) : IOException("The download failed with
  *
  * Finished pieces are listed in a `.done` file next to the partial file, so trying again carries
  * on where the last attempt stopped. A server that ignores ranges gets one plain download.
+ *
+ * Used for app updates, and for titles from providers whose "faster downloads" setting is on.
  */
 class RangedDownloader(
   client: OkHttpClient,
@@ -56,18 +64,27 @@ class RangedDownloader(
     data object SizeUnknown : Probe
   }
 
+  /** Where [part]'s list of finished pieces is kept. */
+  fun logFile(part: File): File = File(part.path + ".done")
+
   /**
    * Downloads [url] into [part], resuming an earlier attempt when [part] has one. [onProgress] gets
    * the bytes so far and the total (or -1), and can be called from several threads at once.
    */
-  suspend fun download(url: String, part: File, onProgress: (done: Long, total: Long) -> Unit) {
+  suspend fun download(url: String, part: File, onProgress: (done: Long, total: Long) -> Unit): String? =
     withContext(Dispatchers.IO) {
-      val log = File(part.path + ".done")
+      // The file's name, from the first response, for callers that name the file after it.
+      var fileName: String? = null
+      val log = logFile(part)
       // One byte tells us the size, whether ranges work, and where redirects end up.
-      val probe = Request.Builder().url(url).header("Range", "bytes=0-0").build()
+      val probe = Request.Builder().url(url).header("Accept", "*/*").header("Range", "bytes=0-0").build()
       val result = http.newCall(probe).readCancellably { response ->
+        fileName = contentDispositionFileName(response.header("Content-Disposition"))
+          ?: response.request.url.pathSegments.lastOrNull()?.takeIf { '.' in it }
         val total = contentRangeTotal(response.header("Content-Range"))
         when {
+          response.isSuccessful && response.header("Content-Type").orEmpty().startsWith("text/html") ->
+            throw NotTheFileException()
           response.code == 206 && total != null && total > 0 -> Probe.Ranged(response.request.url, total)
           response.code == 206 -> Probe.SizeUnknown
           response.isSuccessful -> {
@@ -82,14 +99,14 @@ class RangedDownloader(
         Probe.Saved -> log.delete()
         Probe.SizeUnknown -> {
           log.delete()
-          http.newCall(Request.Builder().url(url).build()).readCancellably { response ->
+          http.newCall(Request.Builder().url(url).header("Accept", "*/*").build()).readCancellably { response ->
             if (!response.isSuccessful) throw HttpStatusException(response.code)
             writeWhole(response, part, onProgress)
           }
         }
       }
+      fileName
     }
-  }
 
   private suspend fun downloadRanges(
     url: HttpUrl,
@@ -150,7 +167,7 @@ class RangedDownloader(
   ) {
     val start = index * chunkSize
     val length = chunkLength(index, total)
-    val request = Request.Builder().url(url).header("Range", "bytes=$start-${start + length - 1}").build()
+    val request = Request.Builder().url(url).header("Accept", "*/*").header("Range", "bytes=$start-${start + length - 1}").build()
     var attempt = 0
     while (true) {
       var written = 0L

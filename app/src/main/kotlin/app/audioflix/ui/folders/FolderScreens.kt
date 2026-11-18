@@ -36,7 +36,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -66,18 +65,18 @@ import app.audioflix.provider.FolderProvider
 import app.audioflix.provider.RemoteEntry
 import app.audioflix.provider.RemoteFolder
 import app.audioflix.provider.SavedFolder
-import app.audioflix.ui.LocalSnackbar
+import app.audioflix.provider.local.LocalFolderProvider
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import app.audioflix.ui.browse.ErrorMessage
 import app.audioflix.ui.browse.Loading
 import app.audioflix.ui.library.libraryStatusLabel
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -105,6 +104,7 @@ fun FolderHomeContent(
   onOpenLink: () -> Unit,
   onOpenFolder: (SavedFolder) -> Unit,
   onRemoveFolder: (SavedFolder) -> Unit,
+  onOpenFolderId: (String) -> Unit,
 ) {
   val focus = LocalFocusManager.current
   fun submit() {
@@ -113,7 +113,9 @@ fun FolderHomeContent(
   }
 
   LazyColumn(Modifier.fillMaxSize()) {
-    item(key = "link") {
+    if (provider is LocalFolderProvider) {
+      item(key = "pick") { FolderPicker(provider, onOpenFolderId) }
+    } else item(key = "link") {
       Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(provider.linkHelp, style = MaterialTheme.typography.bodyMedium)
         OutlinedTextField(
@@ -161,6 +163,32 @@ fun FolderHomeContent(
   }
 }
 
+/** The system folder picker, for folders on the phone. */
+@Composable
+private fun FolderPicker(provider: LocalFolderProvider, onOpenFolderId: (String) -> Unit) {
+  var error by remember { mutableStateOf<String?>(null) }
+  val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+    if (uri == null) return@rememberLauncherForActivityResult
+    try {
+      onOpenFolderId(provider.adoptTree(uri))
+      error = null
+    } catch (e: Exception) {
+      error = errorMessage(e)
+    }
+  }
+  Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Text(provider.linkHelp, style = MaterialTheme.typography.bodyMedium)
+    Button(onClick = {
+      error = null
+      picker.launch(null)
+    }) { Text("Choose a folder") }
+    Column(Modifier.semantics { liveRegion = LiveRegionMode.Polite }) {
+      error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+    }
+  }
+  HorizontalDivider()
+}
+
 sealed interface FolderState {
   data object Loading : FolderState
   data class Loaded(val folder: RemoteFolder) : FolderState
@@ -182,9 +210,6 @@ class FolderViewModel(
     .map { list -> list.associateBy { it.item.key } }
     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
-  private val _events = Channel<AddOutcome>(Channel.BUFFERED)
-  val events = _events.receiveAsFlow()
-
   init {
     load()
   }
@@ -204,13 +229,9 @@ class FolderViewModel(
     }
   }
 
-  fun stream(item: CatalogItem) {
-    viewModelScope.launch { _events.send(adder.stream(item)) }
-  }
+  fun stream(item: CatalogItem) = adder.stream(item)
 
-  fun download(item: CatalogItem) {
-    viewModelScope.launch { _events.send(adder.download(item)) }
-  }
+  fun download(item: CatalogItem) = adder.download(item)
 }
 
 /** One folder of a folder provider: its subfolders and the audio files and zips in it. */
@@ -230,12 +251,7 @@ fun FolderScreen(
     viewModel(key = "$providerId:$folderId") { FolderViewModel(container, provider, folderId, saveToList) }
   val state by viewModel.state.collectAsStateWithLifecycle()
   val library by viewModel.library.collectAsStateWithLifecycle()
-  val snackbar = LocalSnackbar.current
   var adding by remember { mutableStateOf<AddChoice?>(null) }
-
-  LaunchedEffect(viewModel) {
-    viewModel.events.collect { showOutcome(snackbar, it, onOpenItem) }
-  }
 
   Scaffold(
     topBar = {
@@ -266,7 +282,7 @@ fun FolderScreen(
   adding?.let { choice ->
     AddToLibraryDialog(
       choice = choice,
-      sourceName = provider.displayName,
+      provider = provider,
       onStream = {
         adding = null
         viewModel.stream(choice.item)
@@ -411,21 +427,32 @@ private fun EntryRow(
   HorizontalDivider()
 }
 
-/** Asks whether to stream a title from [sourceName] or download it. */
+/** Asks whether to stream (or, for folders on the phone, play in place) a title or download (copy) it. */
 @Composable
 fun AddToLibraryDialog(
   choice: AddChoice,
-  sourceName: String,
+  provider: FolderProvider,
   onStream: () -> Unit,
   onDownload: () -> Unit,
   onDismiss: () -> Unit,
 ) {
+  val sourceName = provider.displayName
   AlertDialog(
     onDismissRequest = onDismiss,
     title = { Text("Add ${choice.item.title}") },
     text = {
       Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (choice.canStream) {
+        if (provider.isLocal) {
+          if (choice.canStream) {
+            Text("Play from folder plays the files where they are, and takes no extra space. If they're moved or deleted, AudioFlix can't play them any more.")
+            Text("Copy into AudioFlix keeps a copy of its own, so the files in the folder can be moved or deleted. Zip files are unpacked.")
+            if (choice.isFolder) {
+              Text("Zip files in the folder are only included when copying.", style = MaterialTheme.typography.bodySmall)
+            }
+          } else {
+            Text("This is a zip file, so it can't be played in place. Copying it into AudioFlix unpacks it.")
+          }
+        } else if (choice.canStream) {
           Text("Stream plays it straight from $sourceName. It needs an internet connection and takes no space on the phone.")
           Text("Download saves it to the phone so you can listen offline. Zip files are unpacked.")
           Text(
@@ -442,8 +469,10 @@ fun AddToLibraryDialog(
     },
     confirmButton = {
       Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (choice.canStream) OutlinedButton(onClick = onStream) { Text("Stream") }
-        Button(onClick = onDownload) { Text("Download") }
+        if (choice.canStream) {
+          OutlinedButton(onClick = onStream) { Text(if (provider.isLocal) "Play from folder" else "Stream") }
+        }
+        Button(onClick = onDownload) { Text(if (provider.isLocal) "Copy into AudioFlix" else "Download") }
       }
     },
     dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
@@ -454,7 +483,8 @@ suspend fun showOutcome(snackbar: SnackbarHostState, outcome: AddOutcome, onOpen
   val result = snackbar.showSnackbar(
     message = outcome.message,
     actionLabel = if (outcome.openKey != null) "Open" else null,
-    duration = SnackbarDuration.Long,
+    // A "working on it" message stays up until the result replaces it.
+    duration = if (outcome.interim) SnackbarDuration.Indefinite else SnackbarDuration.Long,
   )
   if (result == SnackbarResult.ActionPerformed) outcome.openKey?.let(onOpenItem)
 }

@@ -83,12 +83,17 @@ class PlayerConnection(
       if (tracks.isEmpty()) return@launch
       val index = (trackIndex ?: entry.item.currentTrackIndex).coerceIn(tracks.indices)
       val track = tracks[index]
-      val startMs = when {
+      var startMs = when {
         track.completed -> 0L
         track.durationMs > 0 && track.positionMs >= track.durationMs - 2_000 -> 0L
         else -> track.positionMs
       }
       val c = controller()
+      // Resuming a title paused earlier (perhaps before the app was closed): auto-rewind goes back
+      // a little, by how long ago it was last played. Not when switching tracks mid-play.
+      val resuming = startMs > 0 && !c.isPlaying && (trackIndex == null || trackIndex == entry.item.currentTrackIndex)
+      val pausedMs = entry.item.lastPlayedAt?.let { System.currentTimeMillis() - it } ?: 0L
+      if (resuming) startMs = (startMs - settings.autoRewind.value.rewindMs(pausedMs)).coerceAtLeast(0)
 
       if (_state.value.itemKey == itemKey && c.mediaItemCount == tracks.size) {
         c.seekTo(index, startMs)

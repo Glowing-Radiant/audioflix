@@ -9,6 +9,21 @@ the code changed. `scripts/release.sh` turns Unreleased into the new version's s
 
 ## [Unreleased]
 
+### Added
+- Phone folders as a fourth source in Browse: choose a folder on your phone, SD card or USB drive with the system folder picker, and browse it like a Drive folder. A whole folder or a single file can be played where it is, or copied into AudioFlix so it stays even if the folder is moved. Copying works without an internet connection.
+- Faster downloads for AudioVault, Google Drive and website folders: a file comes down over several connections at once, the same way app updates do. Each source has its own switch in Settings, with what it means for that source. It's on for Google Drive and website folders, and off for AudioVault unless you turn it on, since AudioVault is a small volunteer-run site.
+- Auto-rewind, in Settings under Playback: when you press play after pausing, AudioFlix goes back 5 seconds, or 30 seconds if the pause was 30 minutes or longer. It's off unless you turn it on, and all three amounts can be changed. It also works after a phone call, unplugging headphones, or closing the app.
+- The Library can be sorted by recently played, title, or source. Sorted by source, each source has its own heading.
+- A streamed folder's page has a button to browse that folder at its source, and a "Check the folder for new files" option that adds files put there since.
+- Titles with subfolders, such as seasons, list each subfolder's tracks under its own heading.
+
+### Changed
+- The Account tab is now Settings, in categories: Playback, Downloads and storage, a page for each source (its account, faster downloads and support links), and App updates.
+- Adding a title for streaming says straight away that it's working, and carries on if you leave the screen. The result is announced wherever you are.
+
+### Fixed
+- A Drive or website folder added for streaming could show up in the Library with nothing in it, for good, if you left the folder screen while its files were still being read (which can take a while for audiobooks). Titles are now added only once all their files are read, and a title left empty this way is repaired when you open it.
+
 ## [0.4.0] - 2026-11-18
 
 ### Added

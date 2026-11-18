@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -28,6 +27,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.audioflix.data.DownloadStatus
@@ -60,6 +61,14 @@ fun LibraryScreen(
             onSelect = viewModel::setFilter,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
           )
+          DropdownSelector(
+            label = "Sort by",
+            options = LibrarySort.entries,
+            selected = state.sort,
+            optionLabel = { it.label },
+            onSelect = viewModel::setSort,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+          )
           if (state.items.isEmpty()) {
             Text(
               "No titles match \"${state.filter.label}\".",
@@ -68,16 +77,31 @@ fun LibraryScreen(
             )
           }
           LazyColumn(Modifier.fillMaxSize()) {
-            items(state.items, key = { it.item.key }) { entry ->
-              LibraryRow(
-                entry = entry,
-                player = player,
-                onClick = { onOpenItem(entry.item.key) },
-                onPlay = {
-                  if (player.itemKey == entry.item.key) viewModel.togglePlayPause() else viewModel.play(entry.item.key)
-                },
-                onRetry = { viewModel.retry(entry.item.key) },
-              )
+            state.items.forEachIndexed { i, entry ->
+              val providerId = entry.item.providerId
+              // Sorted by source: a heading for each, so TalkBack can jump between sources.
+              if (state.sort == LibrarySort.SOURCE && (i == 0 || state.items[i - 1].item.providerId != providerId)) {
+                item(key = "source:$providerId") {
+                  val count = state.items.count { it.item.providerId == providerId }
+                  Text(
+                    "${viewModel.sourceName(providerId)} ($count)",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 4.dp).semantics { heading() },
+                  )
+                }
+              }
+              item(key = entry.item.key) {
+                LibraryRow(
+                  entry = entry,
+                  player = player,
+                  onClick = { onOpenItem(entry.item.key) },
+                  onPlay = {
+                    if (player.itemKey == entry.item.key) viewModel.togglePlayPause() else viewModel.play(entry.item.key)
+                  },
+                  onRetry = { viewModel.retry(entry.item.key) },
+                )
+              }
             }
           }
         }

@@ -34,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,6 +64,8 @@ import app.audioflix.data.LibraryItemWithTracks
 import app.audioflix.data.Track
 import app.audioflix.download.MediaInstaller
 import app.audioflix.player.PlayerUiState
+import app.audioflix.provider.FolderProvider
+import app.audioflix.ui.folders.errorMessage
 import app.audioflix.ui.LocalSnackbar
 import app.audioflix.ui.browse.Loading
 import app.audioflix.ui.browse.limitReachedText
@@ -72,10 +75,20 @@ import app.audioflix.ui.library.kindLabel
 import app.audioflix.ui.library.listeningSummary
 import app.audioflix.ui.library.statusSummary
 import app.audioflix.ui.spokenDuration
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+
+sealed interface ReloadState {
+  data object Idle : ReloadState
+  data object Running : ReloadState
+  data class Done(val trackCount: Int) : ReloadState
+  data class Failed(val message: String) : ReloadState
+}
 
 class ItemDetailViewModel(private val container: AppContainer, val itemKey: String) : ViewModel() {
   /** Null until loaded, and again once the item is deleted. */
@@ -89,6 +102,39 @@ class ItemDetailViewModel(private val container: AppContainer, val itemKey: Stri
   fun togglePlayPause() = container.player.togglePlayPause()
 
   fun retry() = viewModelScope.launch { container.library.retry(itemKey) }
+
+  /** Reading a streamed title's files again. */
+  private val _reload = MutableStateFlow<ReloadState>(ReloadState.Idle)
+  val reload: StateFlow<ReloadState> = _reload.asStateFlow()
+
+  /**
+   * Reads the title's files from its source again. Runs on the app scope so leaving the page
+   * doesn't leave the title half done.
+   */
+  fun reloadFiles() {
+    val providerId = entry.value?.item?.providerId ?: return
+    if (_reload.value == ReloadState.Running) return
+    _reload.value = ReloadState.Running
+    container.appScope.launch {
+      _reload.value = try {
+        when (val count = container.library.reloadStreaming(itemKey, container.providers[providerId])) {
+          null -> ReloadState.Idle
+          0 -> ReloadState.Failed("There are no audio files there any more.")
+          else -> ReloadState.Done(count)
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        ReloadState.Failed(errorMessage(e))
+      }
+    }
+  }
+
+  /** The provider folder a title is, so its page can open it; null for single files and catalogs. */
+  fun sourceFolder(providerId: String, remoteId: String): String? =
+    (container.providers[providerId] as? FolderProvider)?.folderIdOf(remoteId)
+
+  fun isLocal(providerId: String): Boolean = (container.providers[providerId] as? FolderProvider)?.isLocal == true
 
   /** Name of the service the item comes from, e.g. "Google Drive". */
   fun providerName(providerId: String): String = container.providers[providerId].displayName
@@ -123,6 +169,7 @@ fun ItemDetailScreen(
   onBack: () -> Unit,
   onOpenPlayer: () -> Unit,
   onSignIn: () -> Unit,
+  onOpenFolder: (providerId: String, folderId: String) -> Unit,
 ) {
   val container = LocalContext.current.container
   val viewModel: ItemDetailViewModel = viewModel(key = itemKey) { ItemDetailViewModel(container, itemKey) }
@@ -132,6 +179,11 @@ fun ItemDetailScreen(
   val scope = rememberCoroutineScope()
   var menuOpen by remember { mutableStateOf(false) }
   var confirm by remember { mutableStateOf<Confirm?>(null) }
+  val reload by viewModel.reload.collectAsStateWithLifecycle()
+
+  // A streamed title with no tracks was cut short while being added: read its files again.
+  val needsRepair = entry?.let { it.item.status == DownloadStatus.ONLINE && it.tracks.isEmpty() } == true
+  LaunchedEffect(needsRepair) { if (needsRepair) viewModel.reloadFiles() }
 
   Scaffold(
     topBar = {
@@ -145,6 +197,17 @@ fun ItemDetailScreen(
           Box {
             IconButton(onClick = { menuOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More options") }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+              if (current.item.status == DownloadStatus.ONLINE &&
+                viewModel.sourceFolder(current.item.providerId, current.item.remoteId) != null
+              ) {
+                DropdownMenuItem(
+                  text = { Text("Check the folder for new files") },
+                  onClick = {
+                    menuOpen = false
+                    viewModel.reloadFiles()
+                  },
+                )
+              }
               if (current.playable) {
                 DropdownMenuItem(
                   text = { Text(if (current.item.finished) "Mark as not finished" else "Mark as finished") },
@@ -176,7 +239,7 @@ fun ItemDetailScreen(
     }
     LazyColumn(Modifier.padding(padding).fillMaxSize()) {
       item(key = "header") {
-        Header(current, player, viewModel, onOpenPlayer, onSignIn, onMessage = { message ->
+        Header(current, player, viewModel, reload, onOpenPlayer, onSignIn, onOpenFolder, onMessage = { message ->
           scope.launch { snackbar.showSnackbar(message) }
         })
       }
@@ -192,7 +255,21 @@ fun ItemDetailScreen(
         }
         val tracks = current.sortedTracks
         val groupByFile = current.hasSeveralFiles && current.hasChapters
+        // A folder title with subfolders (seasons, books) lists each subfolder under its own
+        // heading, so the list can be browsed folder by folder and jumped through by heading.
+        val groupByFolder = tracks.distinctBy { folderOf(it.relativePath) }.size > 1
         tracks.forEachIndexed { i, track ->
+          if (groupByFolder && (i == 0 || folderOf(tracks[i - 1].relativePath) != folderOf(track.relativePath))) {
+            item(key = "folder:${track.index}") {
+              Text(
+                folderTitle(folderOf(track.relativePath)),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 4.dp).semantics { heading() },
+              )
+              HorizontalDivider()
+            }
+          }
           // Chapters of several books (files) are easy to tell apart, and to jump between by heading.
           if (groupByFile && (i == 0 || tracks[i - 1].relativePath != track.relativePath)) {
             item(key = "file:${track.index}") {
@@ -301,11 +378,14 @@ private fun Header(
   entry: LibraryItemWithTracks,
   player: PlayerUiState,
   viewModel: ItemDetailViewModel,
+  reload: ReloadState,
   onOpenPlayer: () -> Unit,
   onSignIn: () -> Unit,
+  onOpenFolder: (providerId: String, folderId: String) -> Unit,
   onMessage: (String) -> Unit,
 ) {
   val item = entry.item
+  val sourceFolder = viewModel.sourceFolder(item.providerId, item.remoteId)
   Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     Text(item.title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.semantics { heading() })
     kindLabel(item.kind)?.let { Text(it, style = MaterialTheme.typography.labelLarge) }
@@ -334,14 +414,45 @@ private fun Header(
       }
     }
 
+    if (sourceFolder != null) {
+      OutlinedButton(onClick = { onOpenFolder(item.providerId, sourceFolder) }) {
+        Text("Browse the folder in ${viewModel.providerName(item.providerId)}")
+      }
+    }
+
     when (item.status) {
       DownloadStatus.COMPLETED -> {}
       DownloadStatus.ONLINE -> {
+        val local = viewModel.isLocal(item.providerId)
         Text(
-          "Plays from ${viewModel.providerName(item.providerId)} over the internet. Download it to listen offline.",
+          if (local) {
+            "Plays from its folder on this phone. Copy it into AudioFlix to keep it even if the folder is moved or deleted."
+          } else {
+            "Plays from ${viewModel.providerName(item.providerId)} over the internet. Download it to listen offline."
+          },
           style = MaterialTheme.typography.bodyMedium,
         )
-        OutlinedButton(onClick = { viewModel.download(onMessage) }) { Text("Download for offline listening") }
+        // Said as it changes, since the button pressed (or the page opening) starts it.
+        Column(Modifier.semantics { liveRegion = LiveRegionMode.Polite }) {
+          when (reload) {
+            ReloadState.Idle -> {}
+            ReloadState.Running -> Text(
+              if (entry.tracks.isEmpty()) "Reading the files in this title…" else "Checking the folder for new files…",
+            )
+            is ReloadState.Done -> Text(
+              if (reload.trackCount == 1) "Up to date: 1 track." else "Up to date: ${reload.trackCount} tracks.",
+            )
+            is ReloadState.Failed -> Text("Couldn't read the files. ${reload.message}", color = MaterialTheme.colorScheme.error)
+          }
+        }
+        if (entry.tracks.isEmpty() && reload is ReloadState.Failed) {
+          Button(onClick = viewModel::reloadFiles) { Text("Try again") }
+        }
+        if (entry.tracks.isNotEmpty()) {
+          OutlinedButton(onClick = { viewModel.download(onMessage) }) {
+            Text(if (local) "Copy into AudioFlix" else "Download for offline listening")
+          }
+        }
       }
       DownloadStatus.FAILED -> {
         Text(statusSummary(entry), color = MaterialTheme.colorScheme.error)
@@ -368,6 +479,12 @@ private fun Header(
   }
   HorizontalDivider()
 }
+
+/** The folder a track's file is in, within the title: "" for the title's own folder. */
+private fun folderOf(relativePath: String): String = relativePath.substringBeforeLast('/', "")
+
+private fun folderTitle(folder: String): String =
+  if (folder.isEmpty()) "Main folder" else folder.split('/').joinToString(", ")
 
 private fun playButtonLabel(entry: LibraryItemWithTracks, player: PlayerUiState): String {
   val item = entry.item

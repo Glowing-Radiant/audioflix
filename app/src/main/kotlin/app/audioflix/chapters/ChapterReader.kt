@@ -1,17 +1,49 @@
 package app.audioflix.chapters
 
+import android.content.Context
+import android.net.Uri
 import app.audioflix.net.contentRangeTotal
+import java.io.FileInputStream
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
-/** Reads chapters of files that are only streamed, a few byte ranges at a time. */
-class ChapterReader(private val client: OkHttpClient) {
+/**
+ * Reads chapters of files that aren't downloaded: streamed ones a few byte ranges at a time, and
+ * files played in place from a phone folder (content:// addresses) directly.
+ */
+class ChapterReader(private val context: Context, private val client: OkHttpClient) {
   /** Null when [url] doesn't serve a readable MP4, or doesn't allow byte ranges. */
   suspend fun readRemote(url: String): Mp4Info? = withContext(Dispatchers.IO) {
-    runCatching { Mp4Chapters.read(BlockCachedSource(HttpByteSource(client, url))) }.getOrNull()
+    runCatching {
+      if (url.startsWith("content://")) {
+        context.contentResolver.openFileDescriptor(Uri.parse(url), "r")?.use { pfd ->
+          FileInputStream(pfd.fileDescriptor).channel.use { channel ->
+            Mp4Chapters.read(BlockCachedSource(ChannelByteSource(channel)))
+          }
+        }
+      } else {
+        Mp4Chapters.read(BlockCachedSource(HttpByteSource(client, url)))
+      }
+    }.getOrNull()
+  }
+}
+
+/** A file opened from a content:// address, read at any position. */
+private class ChannelByteSource(private val channel: FileChannel) : ByteSource {
+  override val length: Long = channel.size()
+
+  override fun read(position: Long, size: Int): ByteArray {
+    val n = minOf(size.toLong(), (length - position).coerceAtLeast(0)).toInt()
+    val buffer = ByteBuffer.allocate(n)
+    while (buffer.hasRemaining()) {
+      if (channel.read(buffer, position + buffer.position()) < 0) break
+    }
+    return buffer.array().copyOf(buffer.position())
   }
 }
 

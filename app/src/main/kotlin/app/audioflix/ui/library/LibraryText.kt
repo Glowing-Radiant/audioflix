@@ -3,6 +3,7 @@ package app.audioflix.ui.library
 import app.audioflix.data.DownloadStatus
 import app.audioflix.data.LibraryItemWithTracks
 import app.audioflix.provider.MediaKind
+import app.audioflix.provider.local.LocalFolderProvider
 import app.audioflix.ui.formatBytes
 import kotlin.math.roundToInt
 
@@ -33,7 +34,7 @@ fun listeningSummary(entry: LibraryItemWithTracks): String {
   val item = entry.item
   val count = entry.tracks.size
   val parts = mutableListOf<String>()
-  if (item.status == DownloadStatus.ONLINE) parts += "Streaming"
+  if (item.status == DownloadStatus.ONLINE) parts += if (item.providerId == LocalFolderProvider.ID) "Plays from phone folder" else "Streaming"
   if (count > 1) parts += "$count ${entry.trackNoun}s"
   parts += when {
     item.finished -> "Finished"
@@ -56,7 +57,8 @@ fun libraryStatusLabel(entry: LibraryItemWithTracks): String {
   val item = entry.item
   return when (item.status) {
     DownloadStatus.COMPLETED -> "In library"
-    DownloadStatus.ONLINE -> "In library, streaming"
+    DownloadStatus.ONLINE ->
+      if (item.providerId == LocalFolderProvider.ID) "In library, plays from folder" else "In library, streaming"
     DownloadStatus.QUEUED -> "Waiting to download"
     DownloadStatus.DOWNLOADING ->
       if (item.totalBytes > 0) "Downloading ${downloadPercent(entry)}%" else "Downloading"

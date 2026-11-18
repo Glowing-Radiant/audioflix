@@ -48,6 +48,8 @@ class DownloadStream(
   val fileName: String?,
   val contentType: String?,
   private val onClose: () -> Unit,
+  /** The address the bytes finally came from, after redirects and warning pages. */
+  val url: String? = null,
 ) : Closeable {
   override fun close() {
     input.close()
@@ -80,6 +82,27 @@ interface CatalogProvider {
 
   /** Ways to support or reach the provider, shown on the Account screen. */
   val supportLinks: List<ProviderLink> get() = emptyList()
+
+  /**
+   * Whether files can be downloaded over several connections at once, a piece on each, which is
+   * often much faster. The user turns it on or off per provider in Settings.
+   */
+  val supportsFastDownloads: Boolean get() = false
+
+  /** Whether faster downloads are on until the user changes it. */
+  val fastDownloadsDefault: Boolean get() = true
+
+  /** What turning faster downloads on means for this provider, said under its switch. */
+  val fastDownloadsNote: String get() = ""
+
+  /**
+   * An address that serves the bytes of [fileId] itself (no warning or sign-in page in between) and
+   * accepts byte ranges, for downloading over several connections. Null to download the usual way.
+   */
+  suspend fun rangedDownloadUrl(fileId: String): String? = null
+
+  /** False for providers whose files are already on the phone, so copying them needs no network. */
+  val needsNetwork: Boolean get() = true
 
   /** Signed-in account name (e.g. email), or null when signed out. */
   val account: StateFlow<String?>

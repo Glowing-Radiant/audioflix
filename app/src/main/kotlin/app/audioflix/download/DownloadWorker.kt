@@ -21,6 +21,11 @@ import app.audioflix.provider.RemoteFile
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicLong
+import app.audioflix.net.HttpStatusException
+import app.audioflix.net.NotTheFileException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -98,6 +103,9 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
   /** Downloads the item's single file to [MediaInstaller.PART_FILE]; returns the file's name. */
   private suspend fun downloadSingle(item: LibraryItem, provider: CatalogProvider, dir: File, notificationId: Int): String? {
     val part = File(dir, MediaInstaller.PART_FILE)
+    fastDownload(provider, item.remoteId, part) { downloaded, total ->
+      report(item, notificationId, downloaded, total)
+    }?.let { return it.fileName }
     val resumeFrom = if (part.exists()) part.length() else 0L
     val stream = provider.openDownload(item.remoteId, resumeFrom)
     stream.use {
@@ -139,17 +147,90 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
     for ((file, target) in pending) {
       target.parentFile?.mkdirs()
       val part = File(target.path + PART_SUFFIX)
-      val resumeFrom = if (part.exists()) part.length() else 0L
-      val stream = provider.openDownload(file.id, resumeFrom)
-      val written = stream.use {
-        copyToPart(stream, part, resumeFrom) { downloaded, _ ->
-          report(item, notificationId, finishedBytes + downloaded, total)
+      val base = finishedBytes
+      val fast = fastDownload(provider, file.id, part) { downloaded, _ ->
+        report(item, notificationId, base + downloaded, total)
+      }
+      val written = if (fast != null) {
+        part.length()
+      } else {
+        val resumeFrom = if (part.exists()) part.length() else 0L
+        val stream = provider.openDownload(file.id, resumeFrom)
+        stream.use {
+          copyToPart(stream, part, resumeFrom) { downloaded, _ ->
+            report(item, notificationId, base + downloaded, total)
+          }
         }
       }
       if (!part.renameTo(target)) throw IOException("Couldn't move ${target.name} into place")
       finishedBytes += written
     }
     report(item, notificationId, finishedBytes, total, force = true)
+  }
+
+  private class FastResult(val fileName: String?)
+
+  /**
+   * Downloads [fileId] into [part] over several connections, when [provider] supports it and the
+   * user has faster downloads on for it. Returns null when the file should be downloaded the usual
+   * way instead: the setting is off, or the server sent a page (a sign-in or warning page) rather
+   * than the file, which the provider's own download knows how to handle.
+   */
+  private suspend fun fastDownload(
+    provider: CatalogProvider,
+    fileId: String,
+    part: File,
+    onProgress: suspend (downloaded: Long, total: Long) -> Unit,
+  ): FastResult? {
+    val downloader = container.mediaDownloader
+    val log = downloader.logFile(part)
+    val enabled = provider.supportsFastDownloads &&
+      container.settings.fastDownloads(provider.id, provider.fastDownloadsDefault).value
+    if (enabled) {
+      val url = provider.rangedDownloadUrl(fileId)
+      if (url != null) {
+        try {
+          val name = withProgressTicker(onProgress) { setProgress -> downloader.download(url, part, setProgress) }
+          return FastResult(name)
+        } catch (e: NotTheFileException) {
+          // Fall through to the usual download.
+        } catch (e: HttpStatusException) {
+          if (e.code !in 400..499) throw e
+        }
+      }
+    }
+    // A piece-by-piece partial file can't be resumed from its end: start the usual download afresh.
+    if (log.exists()) {
+      log.delete()
+      part.delete()
+    }
+    return null
+  }
+
+  /**
+   * Runs [block], which reports progress from several threads at once, and passes the latest
+   * progress to [onTick] a few times a second from this coroutine.
+   */
+  private suspend fun <T> withProgressTicker(
+    onTick: suspend (Long, Long) -> Unit,
+    block: suspend (setProgress: (Long, Long) -> Unit) -> T,
+  ): T = coroutineScope {
+    val done = AtomicLong(0)
+    val total = AtomicLong(-1)
+    val ticker = launch {
+      while (true) {
+        delay(750)
+        onTick(done.get(), total.get())
+      }
+    }
+    try {
+      block { d, t ->
+        done.set(d)
+        total.set(t)
+      }.also { onTick(done.get(), total.get()) }
+    } finally {
+      ticker.cancel()
+    }
   }
 
   private var lastReport = 0L

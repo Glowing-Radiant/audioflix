@@ -15,7 +15,6 @@ import app.audioflix.provider.MediaKind
 import app.audioflix.provider.SavedFolder
 import app.audioflix.summary.TitleSummary
 import app.audioflix.ui.folders.AddChoice
-import app.audioflix.ui.folders.AddOutcome
 import app.audioflix.ui.folders.FolderAdder
 import app.audioflix.ui.folders.errorMessage
 import app.audioflix.ui.folders.fileChoice
@@ -86,7 +85,6 @@ sealed interface BrowseEvent {
   data class Queued(val title: String) : BrowseEvent
   data class LimitReached(val providerName: String, val status: QuotaStatus) : BrowseEvent
   data class OpenFolder(val providerId: String, val folderId: String) : BrowseEvent
-  data class Added(val outcome: AddOutcome) : BrowseEvent
 }
 
 class BrowseViewModel(private val container: AppContainer) : ViewModel() {
@@ -188,16 +186,12 @@ class BrowseViewModel(private val container: AppContainer) : ViewModel() {
 
   fun streamPending(pending: PendingAdd) {
     _pendingAdd.value = null
-    viewModelScope.launch {
-      _events.send(BrowseEvent.Added(adders.getValue(pending.provider.id).stream(pending.choice.item)))
-    }
+    adders.getValue(pending.provider.id).stream(pending.choice.item)
   }
 
   fun downloadPending(pending: PendingAdd) {
     _pendingAdd.value = null
-    viewModelScope.launch {
-      _events.send(BrowseEvent.Added(adders.getValue(pending.provider.id).download(pending.choice.item)))
-    }
+    adders.getValue(pending.provider.id).download(pending.choice.item)
   }
 
   fun savedFolders(provider: FolderProvider): StateFlow<List<SavedFolder>> = provider.savedFolders

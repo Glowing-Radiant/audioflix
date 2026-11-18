@@ -111,4 +111,28 @@ class RangedDownloaderTest {
       chunkRequests().map { it.substringAfter("bytes=").substringBefore('-').toLong() },
     )
   }
+
+  @Test fun refusesAWebPageInsteadOfTheFile() {
+    server.dispatcher = object : Dispatcher() {
+      override fun dispatch(request: RecordedRequest) =
+        MockResponse().setHeader("Content-Type", "text/html; charset=utf-8").setBody("<html>Sign in</html>")
+    }
+    val part = File(tmp.root, "page.part")
+    assertThrows(NotTheFileException::class.java) {
+      runBlocking { downloader().download(server.url("/asset").toString(), part) { _, _ -> } }
+    }
+    assertFalse(part.exists())
+  }
+
+  @Test fun reportsTheFileNameTheServerGives() {
+    server.dispatcher = object : Dispatcher() {
+      override fun dispatch(request: RecordedRequest) = MockResponse()
+        .setResponseCode(206)
+        .setHeader("Content-Range", "bytes 0-0/1")
+        .setHeader("Content-Disposition", "attachment; filename=\"Movie (2020).mp3\"")
+        .setBody(Buffer().write(byteArrayOf(1)))
+    }
+    val name = runBlocking { downloader().download(server.url("/download/1").toString(), File(tmp.root, "n.part")) { _, _ -> } }
+    assertEquals("Movie (2020).mp3", name)
+  }
 }

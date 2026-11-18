@@ -50,6 +50,14 @@ class WebFolderProvider(
       "https://example.com/audio/. You can also paste the address of a single audio or zip file. " +
       "Nothing to sign in to."
 
+  override val supportsFastDownloads = true
+
+  override val fastDownloadsNote =
+    "Downloads from websites use several connections at once, a piece of the file on each, which is " +
+      "usually faster. Some small sites allow only a few connections; if downloads fail, turn this off."
+
+  override suspend fun rangedDownloadUrl(fileId: String): String = fileUrl(fileId).toString()
+
   private val saved = SavedFolderStore(prefs, KEY_SAVED)
   override val savedFolders: StateFlow<List<SavedFolder>> = saved.folders
 
@@ -101,6 +109,8 @@ class WebFolderProvider(
 
   override fun fileItem(fileId: String, name: String) =
     CatalogItem(ID, WebRef.File(fileId).remoteId, name.substringBeforeLast('.').ifBlank { name }, kind = null)
+
+  override fun folderIdOf(remoteId: String): String? = (WebRef.parse(remoteId) as? WebRef.Folder)?.id
 
   /**
    * Audio files and zips of a folder title, subfolders included, with paths that mirror the folder

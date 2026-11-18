@@ -5,9 +5,9 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -33,7 +33,12 @@ import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
 import androidx.navigation3.ui.NavDisplay
 import app.audioflix.container
-import app.audioflix.ui.account.AccountScreen
+import app.audioflix.ui.settings.SettingsScreen
+import app.audioflix.ui.settings.SettingsSection
+import app.audioflix.ui.settings.SettingsSectionScreen
+import app.audioflix.ui.folders.showOutcome
+import androidx.compose.material3.SnackbarDuration
+import kotlinx.coroutines.launch
 import app.audioflix.ui.browse.BrowseScreen
 import app.audioflix.ui.browse.BrowseViewModel
 import app.audioflix.ui.detail.ItemDetailScreen
@@ -47,7 +52,10 @@ import kotlinx.serialization.Serializable
 
 @Serializable data object BrowseKey : NavKey
 @Serializable data object LibraryKey : NavKey
-@Serializable data object AccountKey : NavKey
+@Serializable data object SettingsKey : NavKey
+
+/** One page of Settings; see [SettingsSection]. */
+@Serializable data class SettingsSectionKey(val section: String) : NavKey
 @Serializable data class DetailKey(val itemKey: String) : NavKey
 @Serializable data object PlayerKey : NavKey
 @Serializable data object UpdateKey : NavKey
@@ -60,7 +68,7 @@ private data class Tab(val key: NavKey, val label: String, val icon: ImageVector
 private val tabs = listOf(
   Tab(LibraryKey, "Library", Icons.Filled.LibraryMusic),
   Tab(BrowseKey, "Browse", Icons.Filled.Search),
-  Tab(AccountKey, "Account", Icons.Filled.AccountCircle),
+  Tab(SettingsKey, "Settings", Icons.Filled.Settings),
 )
 
 /** App-wide snackbar, so screens can report things like "Sign in to download". */
@@ -82,6 +90,22 @@ fun AppRoot() {
     if (backStack.size == 1 && backStack.first() == key) return
     backStack.clear()
     backStack.add(key)
+  }
+
+  /** Sign-in lives on the page of the source that has accounts, under Settings. */
+  fun openSignIn() {
+    selectTab(SettingsKey)
+    val provider = container.providers.all.firstOrNull { it.requiresLogin } ?: return
+    backStack.add(SettingsSectionKey(SettingsSection.source(provider.id)))
+  }
+
+  // Results of adding titles arrive after the user may have left the screen they started on.
+  LaunchedEffect(Unit) {
+    container.addNotices.flow.collect { outcome ->
+      // A "working on it" message gives way to its result.
+      snackbar.currentSnackbarData?.takeIf { it.visuals.duration == SnackbarDuration.Indefinite }?.dismiss()
+      launch { showOutcome(snackbar, outcome) { backStack.add(DetailKey(it)) } }
+    }
   }
 
   // Open the update screen once for each new version found.
@@ -145,7 +169,7 @@ fun AppRoot() {
             BrowseScreen(
               viewModel = browseViewModel,
               onOpenItem = { backStack.add(DetailKey(it)) },
-              onSignIn = { selectTab(AccountKey) },
+              onSignIn = { openSignIn() },
               onOpenFolder = { providerId, folderId ->
                 backStack.add(FolderKey(providerId, folderId, save = true))
               },
@@ -161,14 +185,22 @@ fun AppRoot() {
               onOpenItem = { backStack.add(DetailKey(it)) },
             )
           }
-          entry<AccountKey> { AccountScreen(onOpenUpdate = { backStack.add(UpdateKey) }) }
+          entry<SettingsKey> { SettingsScreen(onOpenSection = { backStack.add(SettingsSectionKey(it)) }) }
+          entry<SettingsSectionKey> { key ->
+            SettingsSectionScreen(
+              section = key.section,
+              onBack = { backStack.removeLastOrNull() },
+              onOpenUpdate = { backStack.add(UpdateKey) },
+            )
+          }
           entry<UpdateKey> { UpdateScreen(onBack = { backStack.removeLastOrNull() }) }
           entry<DetailKey> { key ->
             ItemDetailScreen(
               itemKey = key.itemKey,
               onBack = { backStack.removeLastOrNull() },
               onOpenPlayer = { backStack.add(PlayerKey) },
-              onSignIn = { selectTab(AccountKey) },
+              onSignIn = { openSignIn() },
+              onOpenFolder = { providerId, folderId -> backStack.add(FolderKey(providerId, folderId, save = false)) },
             )
           }
           entry<PlayerKey> {
