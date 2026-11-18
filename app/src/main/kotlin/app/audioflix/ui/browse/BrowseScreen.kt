@@ -66,9 +66,9 @@ import app.audioflix.provider.MediaKind
 import app.audioflix.ui.DropdownSelector
 import app.audioflix.download.QuotaStatus
 import app.audioflix.ui.LocalSnackbar
-import app.audioflix.ui.drive.AddToLibraryDialog
-import app.audioflix.ui.drive.DriveHomeContent
-import app.audioflix.ui.drive.showOutcome
+import app.audioflix.ui.folders.AddToLibraryDialog
+import app.audioflix.ui.folders.FolderHomeContent
+import app.audioflix.ui.folders.showOutcome
 import app.audioflix.ui.library.libraryStatusLabel
 import app.audioflix.ui.spokenDuration
 
@@ -78,7 +78,7 @@ fun BrowseScreen(
   viewModel: BrowseViewModel,
   onOpenItem: (String) -> Unit,
   onSignIn: () -> Unit,
-  onOpenDriveFolder: (String) -> Unit,
+  onOpenFolder: (String, String) -> Unit,
 ) {
   val tab by viewModel.tab.collectAsStateWithLifecycle()
   val source by viewModel.source.collectAsStateWithLifecycle()
@@ -104,84 +104,89 @@ fun BrowseScreen(
           message = limitReachedText(event.providerName, event.status),
           duration = SnackbarDuration.Long,
         )
-        is BrowseEvent.OpenDriveFolder -> onOpenDriveFolder(event.folderId)
-        is BrowseEvent.DriveAdded -> showOutcome(snackbar, event.outcome, onOpenItem)
+        is BrowseEvent.OpenFolder -> onOpenFolder(event.providerId, event.folderId)
+        is BrowseEvent.Added -> showOutcome(snackbar, event.outcome, onOpenItem)
       }
     }
   }
 
-  val sourceName = { s: BrowseSource -> if (s == BrowseSource.CATALOG) viewModel.provider.displayName else viewModel.driveName }
-
   Scaffold(
-    topBar = { TopAppBar(title = { Text("Browse ${sourceName(source)}") }) },
+    topBar = { TopAppBar(title = { Text("Browse ${source.label}") }) },
   ) { padding ->
     Column(Modifier.padding(padding).fillMaxSize()) {
-      DropdownSelector(
-        label = "Source",
-        options = BrowseSource.entries,
-        selected = source,
-        optionLabel = sourceName,
-        onSelect = viewModel::selectSource,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-      )
-      if (source == BrowseSource.DRIVE) {
-        val saved by viewModel.savedFolders.collectAsStateWithLifecycle()
-        val link by viewModel.driveLink.collectAsStateWithLifecycle()
-        DriveHomeContent(
-          saved = saved,
-          busy = link.busy,
-          error = link.error,
-          onOpenLink = viewModel::openDriveLink,
-          onOpenFolder = { onOpenDriveFolder(it.id) },
-          onRemoveFolder = viewModel::removeSavedFolder,
-        )
-      } else {
+      if (viewModel.sources.size > 1) {
         DropdownSelector(
-          label = "Category",
-          options = BrowseTab.entries,
-          selected = tab,
+          label = "Source",
+          options = viewModel.sources,
+          selected = source,
           optionLabel = { it.label },
-          onSelect = viewModel::selectTab,
+          onSelect = viewModel::selectSource,
           modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         )
-        val actions = RowActions(
-          onClick = { item ->
-            if (library[item.key] != null) {
-              onOpenItem(item.key)
-            } else {
-              fetchSummaryOnOpen = false
+      }
+      when (val current = source) {
+        is BrowseSource.Folders -> {
+          val saved by current.provider.savedFolders.collectAsStateWithLifecycle()
+          val link by viewModel.linkState(current.provider).collectAsStateWithLifecycle()
+          FolderHomeContent(
+            provider = current.provider,
+            saved = saved,
+            busy = link.busy,
+            error = link.error,
+            onOpenLink = { viewModel.openLink(current.provider, it) },
+            onOpenFolder = { onOpenFolder(current.provider.id, it.id) },
+            onRemoveFolder = { viewModel.removeSavedFolder(current.provider, it) },
+          )
+        }
+        is BrowseSource.Catalog -> {
+          DropdownSelector(
+            label = "Category",
+            options = BrowseTab.entries,
+            selected = tab,
+            optionLabel = { it.label },
+            onSelect = viewModel::selectTab,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+          )
+          val actions = RowActions(
+            onClick = { item ->
+              if (library[item.key] != null) {
+                onOpenItem(item.key)
+              } else {
+                fetchSummaryOnOpen = false
+                selected = item
+              }
+            },
+            onViewSummary = { item ->
+              fetchSummaryOnOpen = true
               selected = item
-            }
-          },
-          onViewSummary = { item ->
-            fetchSummaryOnOpen = true
-            selected = item
-          },
-          onDownload = viewModel::download,
-        )
-        when (tab) {
-          BrowseTab.HOME -> HomeContent(viewModel, library, actions)
-          BrowseTab.MOVIES -> ListingContent(viewModel, MediaKind.MOVIE, library, actions)
-          BrowseTab.SHOWS -> ListingContent(viewModel, MediaKind.SHOW, library, actions)
+            },
+            onDownload = viewModel::download,
+          )
+          when (tab) {
+            BrowseTab.HOME -> HomeContent(viewModel, library, actions)
+            BrowseTab.MOVIES -> ListingContent(viewModel, MediaKind.MOVIE, library, actions)
+            BrowseTab.SHOWS -> ListingContent(viewModel, MediaKind.SHOW, library, actions)
+          }
         }
       }
     }
   }
 
-  val driveFile by viewModel.driveFile.collectAsStateWithLifecycle()
-  driveFile?.let { choice ->
-    if (library[choice.item.key] != null) {
+  val pending by viewModel.pendingAdd.collectAsStateWithLifecycle()
+  pending?.let { add ->
+    if (library[add.choice.item.key] != null) {
       // Already added: go to it rather than asking again.
-      LaunchedEffect(choice.item.key) {
-        viewModel.dismissDriveFile()
-        onOpenItem(choice.item.key)
+      LaunchedEffect(add.choice.item.key) {
+        viewModel.dismissPendingAdd()
+        onOpenItem(add.choice.item.key)
       }
     } else {
       AddToLibraryDialog(
-        choice = choice,
-        onStream = { viewModel.streamDriveFile(choice) },
-        onDownload = { viewModel.downloadDriveFile(choice) },
-        onDismiss = viewModel::dismissDriveFile,
+        choice = add.choice,
+        sourceName = add.provider.displayName,
+        onStream = { viewModel.streamPending(add) },
+        onDownload = { viewModel.downloadPending(add) },
+        onDismiss = viewModel::dismissPendingAdd,
       )
     }
   }

@@ -1,5 +1,7 @@
 package app.audioflix.provider.gdrive
 
+import app.audioflix.provider.RemoteEntry
+import app.audioflix.provider.uniquePath
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -35,9 +37,9 @@ class DriveParserTest {
     assertEquals("Radio Plays", folder.title)
     assertEquals(
       listOf(
-        DriveEntry("1Qxkb1CC6cFpFVKLIfap5Or72VjSaSHwP", "Season 1", DriveEntry.Type.FOLDER),
-        DriveEntry("1v_tvVe93cJ7KNMHdR1U7N5_6Oq_fXd0g", "The Hero's Return (Part 1 of 2).m4b", DriveEntry.Type.FILE),
-        DriveEntry("1abcDEFghiJKLmnoPQRstuVWXyz0123456789", "Notes", DriveEntry.Type.OTHER),
+        RemoteEntry("1Qxkb1CC6cFpFVKLIfap5Or72VjSaSHwP", "Season 1", RemoteEntry.Type.FOLDER),
+        RemoteEntry("1v_tvVe93cJ7KNMHdR1U7N5_6Oq_fXd0g", "The Hero's Return (Part 1 of 2).m4b", RemoteEntry.Type.FILE),
+        RemoteEntry("1abcDEFghiJKLmnoPQRstuVWXyz0123456789", "Notes", RemoteEntry.Type.OTHER),
       ),
       folder.entries,
     )

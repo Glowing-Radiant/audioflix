@@ -2,26 +2,27 @@ package app.audioflix.provider.gdrive
 
 import android.content.SharedPreferences
 import app.audioflix.download.MediaInstaller
-import app.audioflix.download.NaturalOrder
 import app.audioflix.net.await
 import app.audioflix.net.contentDispositionFileName
 import app.audioflix.net.contentRangeStart
 import app.audioflix.net.contentRangeTotal
 import app.audioflix.provider.CatalogItem
-import app.audioflix.provider.CatalogProvider
 import app.audioflix.provider.DownloadStream
+import app.audioflix.provider.FolderProvider
+import app.audioflix.provider.FolderUnavailableException
+import app.audioflix.provider.InvalidLinkException
+import app.audioflix.provider.LinkTarget
 import app.audioflix.provider.MediaKind
 import app.audioflix.provider.RemoteFile
+import app.audioflix.provider.RemoteFolder
+import app.audioflix.provider.SavedFolder
+import app.audioflix.provider.SavedFolderStore
+import app.audioflix.provider.collectFolderFiles
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -29,11 +30,7 @@ import okhttp3.Request
 import okhttp3.Response
 
 /** Drive said no in a way retrying won't fix soon: not shared, removed, or download-limited. */
-class DriveUnavailableException(message: String) : Exception(message)
-
-/** A shared folder the user opened, kept so they can come back to it. */
-@Serializable
-data class SavedFolder(val id: String, val title: String)
+class DriveUnavailableException(message: String) : FolderUnavailableException(message)
 
 data class DriveFileInfo(val name: String?, val sizeBytes: Long)
 
@@ -44,32 +41,27 @@ data class DriveFileInfo(val name: String?, val sizeBytes: Long)
  */
 class GoogleDriveProvider(
   private val client: OkHttpClient,
-  private val prefs: SharedPreferences,
-) : CatalogProvider {
+  prefs: SharedPreferences,
+) : FolderProvider {
   override val id = ID
   override val displayName = "Google Drive"
   override val supportedKinds = emptyList<MediaKind>()
   override val requiresLogin = false
   override val account: StateFlow<String?> = MutableStateFlow(null)
 
-  private val json = Json { ignoreUnknownKeys = true }
-  private val savedSerializer = ListSerializer(SavedFolder.serializer())
+  override val linkLabel = "Google Drive link"
+  override val linkHelp =
+    "Paste a link to a Google Drive folder or file that's shared as \"Anyone with the link\". " +
+      "No Google account needed."
 
-  private val _savedFolders = MutableStateFlow(loadSaved())
-  val savedFolders: StateFlow<List<SavedFolder>> = _savedFolders.asStateFlow()
+  private val saved = SavedFolderStore(prefs, KEY_SAVED)
+  override val savedFolders: StateFlow<List<SavedFolder>> = saved.folders
 
-  /** Remembers [folder] at the top of the saved list. */
-  fun saveFolder(folder: SavedFolder) {
-    _savedFolders.update { list -> listOf(folder) + list.filter { it.id != folder.id } }
-    persistSaved()
-  }
+  override fun saveFolder(folder: SavedFolder) = saved.save(folder)
 
-  fun removeFolder(folderId: String) {
-    _savedFolders.update { list -> list.filter { it.id != folderId } }
-    persistSaved()
-  }
+  override fun removeFolder(folderId: String) = saved.remove(folderId)
 
-  suspend fun listFolder(folderId: String): DriveFolder = withContext(Dispatchers.IO) {
+  override suspend fun listFolder(folderId: String): RemoteFolder = withContext(Dispatchers.IO) {
     val url = "$DRIVE/embeddedfolderview".toHttpUrl().newBuilder().addQueryParameter("id", folderId).build()
     client.newCall(Request.Builder().url(url).build()).await().use { response ->
       // Folders that aren't shared publicly answer 404, or send us to the sign-in page.
@@ -80,6 +72,34 @@ class GoogleDriveProvider(
       DriveParser.parseFolder(response.body?.string().orEmpty(), folderId)
     }
   }
+
+  /** Works out whether a link is a folder or a file, asking Drive when the link doesn't say. */
+  override suspend fun resolveLink(text: String): LinkTarget {
+    val link = DriveParser.parseLink(text)
+      ?: throw InvalidLinkException("That doesn't look like a Google Drive link.")
+    return when (link.type) {
+      DriveLink.Type.FOLDER -> LinkTarget.Folder(link.id)
+      DriveLink.Type.FILE -> fileTarget(link.id)
+      DriveLink.Type.UNKNOWN -> {
+        val isFolder = try {
+          listFolder(link.id)
+          true
+        } catch (e: DriveUnavailableException) {
+          false
+        }
+        if (isFolder) LinkTarget.Folder(link.id) else fileTarget(link.id)
+      }
+    }
+  }
+
+  private suspend fun fileTarget(fileId: String) =
+    LinkTarget.File(fileId, fileInfo(fileId).name ?: "Shared file")
+
+  override fun folderItem(folderId: String, title: String) =
+    CatalogItem(ID, DriveRef.Folder(folderId).remoteId, title, kind = null)
+
+  override fun fileItem(fileId: String, name: String) =
+    CatalogItem(ID, DriveRef.File(fileId).remoteId, name.substringBeforeLast('.').ifBlank { name }, kind = null)
 
   /** The name and size of a shared file, from the first byte of its download. */
   suspend fun fileInfo(fileId: String): DriveFileInfo =
@@ -92,7 +112,7 @@ class GoogleDriveProvider(
    * layout. A file title is just that file.
    */
   override suspend fun files(remoteId: String): List<RemoteFile> = when (val ref = DriveRef.parse(remoteId)) {
-    is DriveRef.Folder -> collectFiles(ref.id)
+    is DriveRef.Folder -> collectFolderFiles(ref.id, maxDepth = MAX_DEPTH, maxFiles = MAX_FILES)
     is DriveRef.File -> {
       val name = fileInfo(ref.id).name ?: "audio"
       listOf(RemoteFile(ref.id, MediaInstaller.sanitizeFileName(name)))
@@ -104,31 +124,6 @@ class GoogleDriveProvider(
 
   override suspend fun openDownload(remoteId: String, resumeFrom: Long): DownloadStream =
     open(remoteId, range = if (resumeFrom > 0) "bytes=$resumeFrom-" else null)
-
-  private suspend fun collectFiles(rootId: String): List<RemoteFile> {
-    val files = mutableListOf<RemoteFile>()
-    val usedPaths = HashSet<String>()
-    val visited = hashSetOf(rootId)
-
-    suspend fun walk(folderId: String, prefix: String, depth: Int) {
-      val folder = listFolder(folderId)
-      for (entry in folder.entries.sortedWith(compareBy(NaturalOrder) { it.name })) {
-        if (files.size >= MAX_FILES) return
-        when (entry.type) {
-          DriveEntry.Type.FOLDER -> if (depth < MAX_DEPTH && visited.add(entry.id)) {
-            walk(entry.id, prefix + MediaInstaller.sanitizeFileName(entry.name) + "/", depth + 1)
-          }
-          DriveEntry.Type.FILE -> if (MediaInstaller.isAudioName(entry.name) || MediaInstaller.isArchiveName(entry.name)) {
-            files += RemoteFile(entry.id, uniquePath(prefix + MediaInstaller.sanitizeFileName(entry.name), usedPaths))
-          }
-          DriveEntry.Type.OTHER -> {}
-        }
-      }
-    }
-
-    walk(rootId, "", 0)
-    return files
-  }
 
   private suspend fun open(fileId: String, range: String?): DownloadStream {
     var url = downloadUrl(fileId)
@@ -181,14 +176,6 @@ class GoogleDriveProvider(
     }
   }
 
-  private fun loadSaved(): List<SavedFolder> =
-    prefs.getString(KEY_SAVED, null)?.let { runCatching { json.decodeFromString(savedSerializer, it) }.getOrNull() }
-      .orEmpty()
-
-  private fun persistSaved() {
-    prefs.edit().putString(KEY_SAVED, json.encodeToString(savedSerializer, _savedFolders.value)).apply()
-  }
-
   companion object {
     const val ID = "gdrive"
     private const val DRIVE_HOST = "drive.google.com"
@@ -207,12 +194,6 @@ class GoogleDriveProvider(
       .addQueryParameter("export", "download")
       .addQueryParameter("confirm", "t")
       .build()
-
-    fun folderItem(folderId: String, title: String) =
-      CatalogItem(ID, DriveRef.Folder(folderId).remoteId, title, kind = null)
-
-    fun fileItem(fileId: String, name: String) =
-      CatalogItem(ID, DriveRef.File(fileId).remoteId, name.substringBeforeLast('.').ifBlank { name }, kind = null)
   }
 }
 
@@ -235,20 +216,5 @@ sealed interface DriveRef {
       remoteId.startsWith("file-") -> File(remoteId.removePrefix("file-"))
       else -> null
     }
-  }
-}
-
-/** [path], or "name (2).ext" and so on when a folder holds two files with the same name. */
-internal fun uniquePath(path: String, used: MutableSet<String>): String {
-  if (used.add(path.lowercase())) return path
-  val dir = path.substringBeforeLast('/', "").let { if (it.isEmpty()) "" else "$it/" }
-  val file = path.substringAfterLast('/')
-  val base = file.substringBeforeLast('.', file)
-  val ext = if ('.' in file) "." + file.substringAfterLast('.') else ""
-  var n = 2
-  while (true) {
-    val candidate = "$dir$base ($n)$ext"
-    if (used.add(candidate.lowercase())) return candidate
-    n++
   }
 }

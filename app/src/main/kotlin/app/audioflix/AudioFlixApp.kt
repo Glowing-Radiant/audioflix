@@ -19,6 +19,7 @@ import app.audioflix.player.PlayerConnection
 import app.audioflix.provider.ProviderRegistry
 import app.audioflix.provider.audiovault.AudioVaultProvider
 import app.audioflix.provider.gdrive.GoogleDriveProvider
+import app.audioflix.provider.web.WebFolderProvider
 import app.audioflix.summary.SummaryRepository
 import app.audioflix.summary.WikipediaClient
 import app.audioflix.update.UpdateManager
@@ -57,11 +58,9 @@ class AppContainer(context: Context) {
     listOf(
       AudioVaultProvider(httpClient, cookieJar, prefs),
       GoogleDriveProvider(httpClient, prefs),
+      WebFolderProvider(httpClient, prefs),
     ),
   )
-
-  /** Shared Google Drive folders, which Browse shows next to the catalog. */
-  val drive: GoogleDriveProvider get() = providers[GoogleDriveProvider.ID] as GoogleDriveProvider
 
   val player = PlayerConnection(context, library, providers, settings, appScope)
 
