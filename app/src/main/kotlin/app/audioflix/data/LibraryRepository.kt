@@ -235,6 +235,16 @@ class LibraryRepository(
 
   private fun itemDir(providerId: String, remoteId: String): File {
     val base = context.getExternalFilesDir(null) ?: context.filesDir
-    return File(base, "library/$providerId/$remoteId")
+    return File(base, "library/$providerId/${dirName(remoteId)}")
   }
+
+  /**
+   * [remoteId] as one directory name. Ids that hold a whole web address can be longer than a file
+   * system allows, so those are cut short and told apart by a hash of the whole id.
+   */
+  private fun dirName(remoteId: String): String =
+    if (remoteId.length <= MAX_DIR_NAME) remoteId
+    else remoteId.take(MAX_DIR_NAME - 9) + "-" + Integer.toHexString(remoteId.hashCode())
 }
+
+private const val MAX_DIR_NAME = 120

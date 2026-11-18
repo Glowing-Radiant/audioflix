@@ -2,12 +2,13 @@
 
 An Android library for audio-described movies and TV shows. You browse a provider's catalog, download titles for offline listening, and the app remembers where you stopped in every movie and episode.
 
-There are two sources. [AudioVault](https://audiovault.net) is the catalog: browsing works without an account, and downloading needs an AudioVault login. Google Drive covers anything shared as "Anyone with the link": paste a folder or file link, then stream or download it, with no Google account.
+There are three sources. [AudioVault](https://audiovault.net) is the catalog: browsing works without an account, and downloading needs an AudioVault login. Google Drive covers anything shared as "Anyone with the link". Website folders cover any web server that simply lists the files in a folder. For the last two you paste an address and then stream or download what's there, with nothing to sign in to.
 
 ## Features
 
 - **Browse**: AudioVault's featured titles plus recently added movies and shows, the full movie and show catalogs (they load more as you scroll), and search.
 - **Google Drive**: open a shared folder or file link and browse its subfolders. Folders you open are kept under "Your folders". Add a folder (subfolders included) or a single file to the library to **stream** it straight from Drive or **download** it. A streamed title can be downloaded later, or a downloaded one can go back to streaming, keeping listening progress either way. Zip files can only be downloaded, not streamed.
+- **Website folders**: paste the address of a folder a web server lists (the index pages of Caddy, nginx, Apache and the like), browse its subfolders, and add a folder or a single file the same way as a Drive one: stream or download, zips download-only. Addresses must be `https://`.
 - **Chapters**: m4b and m4a files with chapters are split into one track per chapter, from the Nero `chpl` list or the Apple chapter track, whichever the file has. Each chapter plays as a clip of its file, so next and previous move by chapter and progress is saved per chapter.
 - **Download**: runs in the background with a progress notification and resumes partial files. Shows arrive as a zip, which the app extracts into episodes sorted in natural order (`Episode 2` comes before `Episode 10`). Movies arrive as a single mp3. There's an optional Wi-Fi-only setting.
 - **Library**: filter by movies, shows, in progress, downloads or finished. Each title shows its download state or how much you've listened.
@@ -57,6 +58,7 @@ app/src/main/kotlin/app/audioflix/
   provider/            CatalogProvider interface: list, search, sign in, open a download
     audiovault/        AudioVault scraper (Jsoup) + provider implementation
     gdrive/            Shared Google Drive folders: folder-view parser + provider (no account or API key)
+    web/               Folders a web server lists: index-page parser + provider (any static file server)
   chapters/            MP4 chapter reader (Nero chpl and Apple chapter tracks), for files and HTTP byte ranges
   net/                 OkHttp client (browser UA for Cloudflare) + persistent cookie jar
   data/                Room database: LibraryItem (title + download state) and Track (per-file progress)
@@ -92,6 +94,18 @@ Shared folders are read without an account or API key:
 
 When Drive sends an HTML page instead of the file, the app follows its "Download anyway" form once, or explains the problem (not shared, or Drive's download limit for popular files). A Drive library title is `gdrive:folder-{id}` or `gdrive:file-{id}`. Streamed tracks keep their Drive file id (`Track.remoteFileId`), and the player plays the local file when one exists, otherwise the stream.
 
+### How website folders work
+
+Any server that answers a folder address with a page of links to the files in it will do; nothing is assumed about which server it is.
+
+| What | Request |
+|---|---|
+| Folder listing | `GET <folder address>`: every `<a href>` that stays inside the folder counts. A link ending in `/` is a subfolder, and parent, sorting (`?C=N;O=D`) and off-site links are left out. Names come from the address, not the link text, which Apache shortens |
+| Download or stream | `GET <file address>`, with `Range` for resuming and seeking |
+| Size | `HEAD <file address>`: `Content-Length`, so a folder download can show progress for the whole title |
+
+A website library title is `web:dir-{id}` or `web:url-{id}`, where the id is the address itself, Base64url-encoded so it can also be a directory name on the phone (`LibraryRepository.dirName` shortens over-long ones). Only `https://` addresses are opened, since a plain `http://` download could be read or changed on the way.
+
 ### How chapters work
 
 `Mp4Chapters` walks the MP4 box tree and reads only `moov`: `mvhd` for the length, `udta/chpl` for Nero chapters, and otherwise the text track that the audio track names in `tref/chap`, whose samples are the chapter titles. Audiobooks usually keep `moov` at the end, after the audio, so over HTTP the reader skips `mdat` by its size and reads 64 KB blocks with range requests. For a 200 MB file that is about six requests. A chapter is a `Track` with `startMs` and `endMs` in its file. The player gives it a `ClippingConfiguration`, and streams go through a 256 MB `SimpleCache`, so each chapter doesn't fetch the file's index again.
@@ -99,3 +113,5 @@ When Drive sends an HTML page instead of the file, the app follows its "Download
 ### Adding a provider
 
 Implement `CatalogProvider` and register it in `AppContainer` (`AudioFlixApp.kt`). Items are keyed as `providerId:remoteId`. The download pipeline accepts any provider whose `openDownload` returns an audio file or a zip of audio files. Providers whose titles are several files (folders) override `files()`; with `streamUrl()` as well, titles can be streamed without downloading.
+
+A provider the user opens by link rather than by searching implements `FolderProvider` instead (`listFolder`, `resolveLink`, `folderItem`, `fileItem`, and a `SavedFolderStore` for "Your folders"). Browse then offers it in the Source dropdown, folders get the shared folder screen and the stream-or-download dialog, and `collectFolderFiles` walks the tree into the files of one title. Google Drive and website folders are both just that interface.

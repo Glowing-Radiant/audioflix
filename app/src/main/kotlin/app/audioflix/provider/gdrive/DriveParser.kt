@@ -1,5 +1,7 @@
 package app.audioflix.provider.gdrive
 
+import app.audioflix.provider.RemoteEntry
+import app.audioflix.provider.RemoteFolder
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.jsoup.Jsoup
 
@@ -13,18 +15,6 @@ data class DriveLink(val id: String, val type: Type) {
     UNKNOWN,
   }
 }
-
-data class DriveEntry(val id: String, val name: String, val type: Type) {
-  enum class Type {
-    FOLDER,
-    FILE,
-
-    /** Google Docs, Sheets and the like: nothing that can be downloaded as audio. */
-    OTHER,
-  }
-}
-
-data class DriveFolder(val id: String, val title: String, val entries: List<DriveEntry>)
 
 /**
  * Reads shared ("anyone with the link") Google Drive folders without an account or API key, from
@@ -48,7 +38,7 @@ object DriveParser {
   }
 
   /** Parses `drive.google.com/embeddedfolderview?id=<id>`. */
-  fun parseFolder(html: String, folderId: String): DriveFolder {
+  fun parseFolder(html: String, folderId: String): RemoteFolder {
     val doc = Jsoup.parse(html)
     val entries = doc.select("div.flip-entry").mapNotNull { el ->
       val id = el.id().removePrefix("entry-").takeIf { it.isNotBlank() } ?: return@mapNotNull null
@@ -56,14 +46,14 @@ object DriveParser {
       if (name.isEmpty()) return@mapNotNull null
       val href = el.selectFirst("a[href]")?.attr("href").orEmpty()
       val type = when {
-        folderPath.containsMatchIn(href) -> DriveEntry.Type.FOLDER
-        filePath.containsMatchIn(href) && "drive.google.com" in href -> DriveEntry.Type.FILE
-        else -> DriveEntry.Type.OTHER
+        folderPath.containsMatchIn(href) -> RemoteEntry.Type.FOLDER
+        filePath.containsMatchIn(href) && "drive.google.com" in href -> RemoteEntry.Type.FILE
+        else -> RemoteEntry.Type.OTHER
       }
-      DriveEntry(id, name, type)
+      RemoteEntry(id, name, type)
     }
     val title = doc.title().trim().ifEmpty { "Shared folder" }
-    return DriveFolder(folderId, title, entries)
+    return RemoteFolder(folderId, title, entries)
   }
 
   /**

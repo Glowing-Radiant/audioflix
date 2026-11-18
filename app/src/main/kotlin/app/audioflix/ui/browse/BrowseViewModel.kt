@@ -9,17 +9,16 @@ import app.audioflix.download.QuotaStatus
 import app.audioflix.provider.CatalogItem
 import app.audioflix.provider.CatalogProvider
 import app.audioflix.provider.CatalogSection
+import app.audioflix.provider.FolderProvider
+import app.audioflix.provider.LinkTarget
 import app.audioflix.provider.MediaKind
-import app.audioflix.provider.gdrive.DriveLink
-import app.audioflix.provider.gdrive.DriveParser
-import app.audioflix.provider.gdrive.DriveUnavailableException
-import app.audioflix.provider.gdrive.SavedFolder
+import app.audioflix.provider.SavedFolder
 import app.audioflix.summary.TitleSummary
-import app.audioflix.ui.drive.AddChoice
-import app.audioflix.ui.drive.AddOutcome
-import app.audioflix.ui.drive.DriveAdder
-import app.audioflix.ui.drive.errorMessage
-import app.audioflix.ui.drive.fileChoice
+import app.audioflix.ui.folders.AddChoice
+import app.audioflix.ui.folders.AddOutcome
+import app.audioflix.ui.folders.FolderAdder
+import app.audioflix.ui.folders.errorMessage
+import app.audioflix.ui.folders.fileChoice
 import java.net.UnknownHostException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -36,10 +35,24 @@ import kotlinx.coroutines.launch
 
 enum class BrowseTab(val label: String) { HOME("Featured"), MOVIES("Movies"), SHOWS("Shows") }
 
-/** Where Browse looks: the default provider's catalog, or shared Google Drive links. */
-enum class BrowseSource { CATALOG, DRIVE }
+/** Where Browse looks: the default provider's catalog, or a provider browsed by link. */
+sealed interface BrowseSource {
+  val label: String
 
-data class DriveLinkState(val busy: Boolean = false, val error: String? = null)
+  data class Catalog(val provider: CatalogProvider) : BrowseSource {
+    override val label: String get() = provider.displayName
+  }
+
+  data class Folders(val provider: FolderProvider) : BrowseSource {
+    override val label: String get() = provider.displayName
+  }
+}
+
+/** One folder provider's link box: what's typed in it, and what came of opening it. */
+data class LinkState(val text: String = "", val busy: Boolean = false, val error: String? = null)
+
+/** A single file opened from a link, waiting for the user to say stream or download. */
+data class PendingAdd(val provider: FolderProvider, val choice: AddChoice)
 
 data class HomeState(
   val sections: List<CatalogSection> = emptyList(),
@@ -72,8 +85,8 @@ sealed interface BrowseEvent {
   data class NeedsSignIn(val providerName: String) : BrowseEvent
   data class Queued(val title: String) : BrowseEvent
   data class LimitReached(val providerName: String, val status: QuotaStatus) : BrowseEvent
-  data class OpenDriveFolder(val folderId: String) : BrowseEvent
-  data class DriveAdded(val outcome: AddOutcome) : BrowseEvent
+  data class OpenFolder(val providerId: String, val folderId: String) : BrowseEvent
+  data class Added(val outcome: AddOutcome) : BrowseEvent
 }
 
 class BrowseViewModel(private val container: AppContainer) : ViewModel() {
@@ -102,20 +115,22 @@ class BrowseViewModel(private val container: AppContainer) : ViewModel() {
   private val _events = Channel<BrowseEvent>(Channel.BUFFERED)
   val events = _events.receiveAsFlow()
 
-  private val _source = MutableStateFlow(BrowseSource.CATALOG)
+  private val folderProviders: List<FolderProvider> = container.providers.folderProviders
+
+  /** The catalog first, then each provider the user opens by link. */
+  val sources: List<BrowseSource> =
+    listOf(BrowseSource.Catalog(provider)) + folderProviders.map(BrowseSource::Folders)
+
+  private val _source = MutableStateFlow(sources.first())
   val source: StateFlow<BrowseSource> = _source.asStateFlow()
 
-  val driveName: String get() = container.drive.displayName
-  val savedFolders: StateFlow<List<SavedFolder>> = container.drive.savedFolders
+  private val linkStates = folderProviders.associate { it.id to MutableStateFlow(LinkState()) }
+  private val adders = folderProviders.associate { it.id to FolderAdder(container, it) }
 
-  private val _driveLink = MutableStateFlow(DriveLinkState())
-  val driveLink: StateFlow<DriveLinkState> = _driveLink.asStateFlow()
+  fun linkState(provider: FolderProvider): StateFlow<LinkState> = linkStates.getValue(provider.id).asStateFlow()
 
-  /** A shared file opened from a link, waiting for the user to stream or download it. */
-  private val _driveFile = MutableStateFlow<AddChoice?>(null)
-  val driveFile: StateFlow<AddChoice?> = _driveFile.asStateFlow()
-
-  private val driveAdder = DriveAdder(container)
+  private val _pendingAdd = MutableStateFlow<PendingAdd?>(null)
+  val pendingAdd: StateFlow<PendingAdd?> = _pendingAdd.asStateFlow()
 
   init {
     loadHome()
@@ -134,63 +149,60 @@ class BrowseViewModel(private val container: AppContainer) : ViewModel() {
     _source.value = source
   }
 
-  /** Opens a pasted Drive link: folders open their own screen, a single file asks how to add it. */
-  fun openDriveLink(text: String) {
-    val link = DriveParser.parseLink(text)
-    if (link == null) {
-      _driveLink.value = DriveLinkState(error = "That doesn't look like a Google Drive link.")
-      return
-    }
-    _driveLink.value = DriveLinkState(busy = true)
+  /**
+   * Opens a pasted link: a folder opens its own screen, a single file asks how to add it. The
+   * provider works out which it is, asking the server when the link alone doesn't say.
+   */
+  /** Each source keeps its own address, so switching source doesn't lose what was typed. */
+  fun setLinkText(provider: FolderProvider, text: String) {
+    linkStates.getValue(provider.id).update { it.copy(text = text, error = null) }
+  }
+
+  fun openLink(provider: FolderProvider) {
+    val state = linkStates.getValue(provider.id)
+    val text = state.value.text
+    state.update { it.copy(busy = true, error = null) }
     viewModelScope.launch {
       try {
-        when (link.type) {
-          DriveLink.Type.FOLDER -> openDriveFolder(link.id)
-          DriveLink.Type.FILE -> openDriveFile(link.id)
-          DriveLink.Type.UNKNOWN -> {
-            val isFolder = try {
-              container.drive.listFolder(link.id)
-              true
-            } catch (e: DriveUnavailableException) {
-              false
-            }
-            if (isFolder) openDriveFolder(link.id) else openDriveFile(link.id)
+        when (val target = provider.resolveLink(text)) {
+          is LinkTarget.Folder -> {
+            state.update { it.copy(busy = false) }
+            _events.send(BrowseEvent.OpenFolder(provider.id, target.id))
+          }
+          is LinkTarget.File -> {
+            state.update { it.copy(busy = false) }
+            _pendingAdd.value = PendingAdd(provider, fileChoice(provider, target.id, target.name))
           }
         }
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
-        _driveLink.value = DriveLinkState(error = errorMessage(e))
+        state.update { it.copy(busy = false, error = errorMessage(e)) }
       }
     }
   }
 
-  private suspend fun openDriveFolder(id: String) {
-    _driveLink.value = DriveLinkState()
-    _events.send(BrowseEvent.OpenDriveFolder(id))
+  fun dismissPendingAdd() {
+    _pendingAdd.value = null
   }
 
-  private suspend fun openDriveFile(id: String) {
-    val info = container.drive.fileInfo(id)
-    _driveLink.value = DriveLinkState()
-    _driveFile.value = fileChoice(id, info.name ?: "Shared file")
+  fun streamPending(pending: PendingAdd) {
+    _pendingAdd.value = null
+    viewModelScope.launch {
+      _events.send(BrowseEvent.Added(adders.getValue(pending.provider.id).stream(pending.choice.item)))
+    }
   }
 
-  fun dismissDriveFile() {
-    _driveFile.value = null
+  fun downloadPending(pending: PendingAdd) {
+    _pendingAdd.value = null
+    viewModelScope.launch {
+      _events.send(BrowseEvent.Added(adders.getValue(pending.provider.id).download(pending.choice.item)))
+    }
   }
 
-  fun streamDriveFile(choice: AddChoice) {
-    _driveFile.value = null
-    viewModelScope.launch { _events.send(BrowseEvent.DriveAdded(driveAdder.stream(choice.item))) }
-  }
+  fun savedFolders(provider: FolderProvider): StateFlow<List<SavedFolder>> = provider.savedFolders
 
-  fun downloadDriveFile(choice: AddChoice) {
-    _driveFile.value = null
-    viewModelScope.launch { _events.send(BrowseEvent.DriveAdded(driveAdder.download(choice.item))) }
-  }
-
-  fun removeSavedFolder(folder: SavedFolder) = container.drive.removeFolder(folder.id)
+  fun removeSavedFolder(provider: FolderProvider, folder: SavedFolder) = provider.removeFolder(folder.id)
 
   fun loadHome() {
     _home.update { it.copy(loading = true, error = null) }

@@ -37,7 +37,7 @@ import app.audioflix.ui.account.AccountScreen
 import app.audioflix.ui.browse.BrowseScreen
 import app.audioflix.ui.browse.BrowseViewModel
 import app.audioflix.ui.detail.ItemDetailScreen
-import app.audioflix.ui.drive.DriveFolderScreen
+import app.audioflix.ui.folders.FolderScreen
 import app.audioflix.ui.library.LibraryScreen
 import app.audioflix.ui.library.LibraryViewModel
 import app.audioflix.ui.player.MiniPlayer
@@ -52,8 +52,8 @@ import kotlinx.serialization.Serializable
 @Serializable data object PlayerKey : NavKey
 @Serializable data object UpdateKey : NavKey
 
-/** A shared Drive folder; [save] adds it to "Your folders" (true for links, false for subfolders). */
-@Serializable data class DriveFolderKey(val folderId: String, val save: Boolean) : NavKey
+/** A folder of a link-browsed provider; [save] adds it to "Your folders" (true for pasted links). */
+@Serializable data class FolderKey(val providerId: String, val folderId: String, val save: Boolean) : NavKey
 
 private data class Tab(val key: NavKey, val label: String, val icon: ImageVector)
 
@@ -146,15 +146,18 @@ fun AppRoot() {
               viewModel = browseViewModel,
               onOpenItem = { backStack.add(DetailKey(it)) },
               onSignIn = { selectTab(AccountKey) },
-              onOpenDriveFolder = { backStack.add(DriveFolderKey(it, save = true)) },
+              onOpenFolder = { providerId, folderId ->
+                backStack.add(FolderKey(providerId, folderId, save = true))
+              },
             )
           }
-          entry<DriveFolderKey> { key ->
-            DriveFolderScreen(
+          entry<FolderKey> { key ->
+            FolderScreen(
+              providerId = key.providerId,
               folderId = key.folderId,
               saveToList = key.save,
               onBack = { backStack.removeLastOrNull() },
-              onOpenFolder = { backStack.add(DriveFolderKey(it, save = false)) },
+              onOpenFolder = { backStack.add(FolderKey(key.providerId, it, save = false)) },
               onOpenItem = { backStack.add(DetailKey(it)) },
             )
           }

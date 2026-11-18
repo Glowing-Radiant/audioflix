@@ -1,4 +1,4 @@
-package app.audioflix.ui.drive
+package app.audioflix.ui.folders
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -40,7 +40,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -63,10 +62,10 @@ import app.audioflix.container
 import app.audioflix.data.LibraryItemWithTracks
 import app.audioflix.download.MediaInstaller
 import app.audioflix.provider.CatalogItem
-import app.audioflix.provider.gdrive.DriveEntry
-import app.audioflix.provider.gdrive.DriveFolder
-import app.audioflix.provider.gdrive.GoogleDriveProvider
-import app.audioflix.provider.gdrive.SavedFolder
+import app.audioflix.provider.FolderProvider
+import app.audioflix.provider.RemoteEntry
+import app.audioflix.provider.RemoteFolder
+import app.audioflix.provider.SavedFolder
 import app.audioflix.ui.LocalSnackbar
 import app.audioflix.ui.browse.ErrorMessage
 import app.audioflix.ui.browse.Loading
@@ -85,50 +84,50 @@ import kotlinx.coroutines.launch
 /** A title the user is about to add: whether it can be streamed decides which buttons show. */
 data class AddChoice(val item: CatalogItem, val canStream: Boolean, val isFolder: Boolean)
 
-fun folderChoice(id: String, title: String) =
-  AddChoice(GoogleDriveProvider.folderItem(id, title), canStream = true, isFolder = true)
+fun folderChoice(provider: FolderProvider, id: String, title: String) =
+  AddChoice(provider.folderItem(id, title), canStream = true, isFolder = true)
 
-fun fileChoice(id: String, name: String) = AddChoice(
-  GoogleDriveProvider.fileItem(id, name),
+fun fileChoice(provider: FolderProvider, id: String, name: String) = AddChoice(
+  provider.fileItem(id, name),
   canStream = !MediaInstaller.isArchiveName(name),
   isFolder = false,
 )
 
-/** Browse's Google Drive page: open a shared link, or one of the folders opened before. */
+/** A folder provider's page in Browse: open a link, or one of the folders opened before. */
 @Composable
-fun DriveHomeContent(
+fun FolderHomeContent(
+  provider: FolderProvider,
   saved: List<SavedFolder>,
+  linkText: String,
   busy: Boolean,
   error: String?,
-  onOpenLink: (String) -> Unit,
+  onLinkChange: (String) -> Unit,
+  onOpenLink: () -> Unit,
   onOpenFolder: (SavedFolder) -> Unit,
   onRemoveFolder: (SavedFolder) -> Unit,
 ) {
   val focus = LocalFocusManager.current
-  var link by rememberSaveable { mutableStateOf("") }
   fun submit() {
     focus.clearFocus()
-    onOpenLink(link)
+    onOpenLink()
   }
 
   LazyColumn(Modifier.fillMaxSize()) {
     item(key = "link") {
       Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(
-          "Paste a link to a Google Drive folder or file that's shared as \"Anyone with the link\". " +
-            "No Google account needed.",
-          style = MaterialTheme.typography.bodyMedium,
-        )
+        Text(provider.linkHelp, style = MaterialTheme.typography.bodyMedium)
         OutlinedTextField(
-          value = link,
-          onValueChange = { link = it },
+          value = linkText,
+          onValueChange = onLinkChange,
           modifier = Modifier.fillMaxWidth(),
-          label = { Text("Google Drive link") },
+          label = { Text(provider.linkLabel) },
           singleLine = true,
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
           keyboardActions = KeyboardActions(onGo = { submit() }),
         )
-        Button(onClick = ::submit, enabled = link.isNotBlank() && !busy) { Text(if (busy) "Opening…" else "Open link") }
+        Button(onClick = ::submit, enabled = linkText.isNotBlank() && !busy) {
+          Text(if (busy) "Opening…" else "Open link")
+        }
         // Announced when opening fails, since focus stays on the button.
         Column(Modifier.semantics { liveRegion = LiveRegionMode.Polite }) {
           error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -137,7 +136,7 @@ fun DriveHomeContent(
       HorizontalDivider()
     }
     if (saved.isNotEmpty()) {
-      item(key = "saved-heading") { SectionHeading("Your folders") }
+      item(key = "saved-heading") { SectionHeading(provider.savedHeading) }
       items(saved, key = { it.id }) { folder ->
         ListItem(
           modifier = Modifier
@@ -164,16 +163,17 @@ fun DriveHomeContent(
 
 sealed interface FolderState {
   data object Loading : FolderState
-  data class Loaded(val folder: DriveFolder) : FolderState
+  data class Loaded(val folder: RemoteFolder) : FolderState
   data class Failed(val message: String) : FolderState
 }
 
-class DriveFolderViewModel(
+class FolderViewModel(
   private val container: AppContainer,
+  private val provider: FolderProvider,
   private val folderId: String,
   private val saveToList: Boolean,
 ) : ViewModel() {
-  private val adder = DriveAdder(container)
+  private val adder = FolderAdder(container, provider)
 
   private val _state = MutableStateFlow<FolderState>(FolderState.Loading)
   val state: StateFlow<FolderState> = _state.asStateFlow()
@@ -193,8 +193,8 @@ class DriveFolderViewModel(
     _state.value = FolderState.Loading
     viewModelScope.launch {
       _state.value = try {
-        val folder = container.drive.listFolder(folderId)
-        if (saveToList) container.drive.saveFolder(SavedFolder(folderId, folder.title))
+        val folder = provider.listFolder(folderId)
+        if (saveToList) provider.saveFolder(SavedFolder(folder.id, folder.title))
         FolderState.Loaded(folder)
       } catch (e: CancellationException) {
         throw e
@@ -213,9 +213,11 @@ class DriveFolderViewModel(
   }
 }
 
+/** One folder of a folder provider: its subfolders and the audio files and zips in it. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DriveFolderScreen(
+fun FolderScreen(
+  providerId: String,
   folderId: String,
   saveToList: Boolean,
   onBack: () -> Unit,
@@ -223,8 +225,9 @@ fun DriveFolderScreen(
   onOpenItem: (String) -> Unit,
 ) {
   val container = LocalContext.current.container
-  val viewModel: DriveFolderViewModel =
-    viewModel(key = "drive:$folderId") { DriveFolderViewModel(container, folderId, saveToList) }
+  val provider = remember(providerId) { container.providers.folders(providerId) }
+  val viewModel: FolderViewModel =
+    viewModel(key = "$providerId:$folderId") { FolderViewModel(container, provider, folderId, saveToList) }
   val state by viewModel.state.collectAsStateWithLifecycle()
   val library by viewModel.library.collectAsStateWithLifecycle()
   val snackbar = LocalSnackbar.current
@@ -237,7 +240,7 @@ fun DriveFolderScreen(
   Scaffold(
     topBar = {
       TopAppBar(
-        title = { Text((state as? FolderState.Loaded)?.folder?.title ?: "Google Drive", maxLines = 1) },
+        title = { Text((state as? FolderState.Loaded)?.folder?.title ?: provider.displayName, maxLines = 1) },
         navigationIcon = {
           IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
         },
@@ -249,6 +252,7 @@ fun DriveFolderScreen(
         FolderState.Loading -> Loading()
         is FolderState.Failed -> ErrorMessage(s.message, viewModel::load)
         is FolderState.Loaded -> FolderContent(
+          provider = provider,
           folder = s.folder,
           library = library,
           onAdd = { adding = it },
@@ -262,6 +266,7 @@ fun DriveFolderScreen(
   adding?.let { choice ->
     AddToLibraryDialog(
       choice = choice,
+      sourceName = provider.displayName,
       onStream = {
         adding = null
         viewModel.stream(choice.item)
@@ -277,18 +282,19 @@ fun DriveFolderScreen(
 
 @Composable
 private fun FolderContent(
-  folder: DriveFolder,
+  provider: FolderProvider,
+  folder: RemoteFolder,
   library: Map<String, LibraryItemWithTracks>,
   onAdd: (AddChoice) -> Unit,
   onOpenFolder: (String) -> Unit,
   onOpenItem: (String) -> Unit,
 ) {
-  val folders = folder.entries.filter { it.type == DriveEntry.Type.FOLDER }
+  val folders = folder.entries.filter { it.type == RemoteEntry.Type.FOLDER }
   val files = folder.entries.filter {
-    it.type == DriveEntry.Type.FILE && (MediaInstaller.isAudioName(it.name) || MediaInstaller.isArchiveName(it.name))
+    it.type == RemoteEntry.Type.FILE && (MediaInstaller.isAudioName(it.name) || MediaInstaller.isArchiveName(it.name))
   }
   val others = folder.entries.size - folders.size - files.size
-  val self = folderChoice(folder.id, folder.title)
+  val self = folderChoice(provider, folder.id, folder.title)
   val selfEntry = library[self.item.key]
 
   LazyColumn(Modifier.fillMaxSize()) {
@@ -311,7 +317,7 @@ private fun FolderContent(
     if (folders.isNotEmpty()) {
       item(key = "folders-heading") { SectionHeading("Folders (${folders.size})") }
       items(folders, key = { "d:${it.id}" }) { entry ->
-        val choice = folderChoice(entry.id, entry.name)
+        val choice = folderChoice(provider, entry.id, entry.name)
         EntryRow(
           entry = entry,
           inLibrary = library[choice.item.key],
@@ -325,7 +331,7 @@ private fun FolderContent(
     if (files.isNotEmpty()) {
       item(key = "files-heading") { SectionHeading("Files (${files.size})") }
       items(files, key = { "f:${it.id}" }) { entry ->
-        val choice = fileChoice(entry.id, entry.name)
+        val choice = fileChoice(provider, entry.id, entry.name)
         val inLibrary = library[choice.item.key]
         EntryRow(
           entry = entry,
@@ -345,7 +351,7 @@ private fun FolderContent(
   }
 }
 
-private fun folderSummary(folders: Int, files: List<DriveEntry>, others: Int): String {
+private fun folderSummary(folders: Int, files: List<RemoteEntry>, others: Int): String {
   val zips = files.count { MediaInstaller.isArchiveName(it.name) }
   val audio = files.size - zips
   val parts = listOfNotNull(
@@ -366,14 +372,14 @@ private fun plural(n: Int, noun: String) = if (n == 1) "1 $noun" else "$n ${noun
 
 @Composable
 private fun EntryRow(
-  entry: DriveEntry,
+  entry: RemoteEntry,
   inLibrary: LibraryItemWithTracks?,
   typeLabel: String,
   onClickLabel: String,
   onClick: () -> Unit,
   extraAction: Pair<String, () -> Unit>?,
 ) {
-  val isFolder = entry.type == DriveEntry.Type.FOLDER
+  val isFolder = entry.type == RemoteEntry.Type.FOLDER
   ListItem(
     modifier = Modifier
       .clickable(onClickLabel = onClickLabel, onClick = onClick)
@@ -405,10 +411,11 @@ private fun EntryRow(
   HorizontalDivider()
 }
 
-/** Asks whether to stream or download a Drive title. */
+/** Asks whether to stream a title from [sourceName] or download it. */
 @Composable
 fun AddToLibraryDialog(
   choice: AddChoice,
+  sourceName: String,
   onStream: () -> Unit,
   onDownload: () -> Unit,
   onDismiss: () -> Unit,
@@ -419,7 +426,7 @@ fun AddToLibraryDialog(
     text = {
       Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (choice.canStream) {
-          Text("Stream plays it straight from Google Drive. It needs an internet connection and takes no space on the phone.")
+          Text("Stream plays it straight from $sourceName. It needs an internet connection and takes no space on the phone.")
           Text("Download saves it to the phone so you can listen offline. Zip files are unpacked.")
           Text(
             "Either way your listening progress is kept, and a streamed title can be downloaded later from its page.",

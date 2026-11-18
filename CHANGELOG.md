@@ -9,6 +9,12 @@ the code changed. `scripts/release.sh` turns Unreleased into the new version's s
 
 ## [Unreleased]
 
+### Added
+- Website folders as a third source in Browse: paste the address of a folder a website lists its files in, like https://example.com/audio/, and browse its folders with nothing to sign in to. Folders you open are kept under "Your folders", and a whole folder (subfolders included) or a single file can be added to your library to stream or to download, the same as a Google Drive one. Zip files can only be downloaded, and addresses have to start with https://.
+
+### Changed
+- The address box in Browse keeps what you typed for each source separately, so switching source doesn't clear it.
+
 ## [0.3.1] - 2026-11-17
 
 ### Changed
