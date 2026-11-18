@@ -189,14 +189,14 @@ class BrowseViewModel(private val container: AppContainer) : ViewModel() {
   fun streamPending(pending: PendingAdd) {
     _pendingAdd.value = null
     viewModelScope.launch {
-      _events.send(BrowseEvent.Added(adders.getValue(pending.provider.id).stream(pending.choice)))
+      _events.send(BrowseEvent.Added(adders.getValue(pending.provider.id).stream(pending.choice.item)))
     }
   }
 
   fun downloadPending(pending: PendingAdd) {
     _pendingAdd.value = null
     viewModelScope.launch {
-      _events.send(BrowseEvent.Added(adders.getValue(pending.provider.id).download(pending.choice)))
+      _events.send(BrowseEvent.Added(adders.getValue(pending.provider.id).download(pending.choice.item)))
     }
   }
 
