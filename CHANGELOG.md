@@ -9,6 +9,8 @@ the code changed. `scripts/release.sh` turns Unreleased into the new version's s
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-19
+
 ### Added
 - Phone folders as a fourth source in Browse: choose a folder on your phone, SD card or USB drive with the system folder picker, and browse it like a Drive folder. A whole folder or a single file can be played where it is, or copied into AudioFlix so it stays even if the folder is moved. Copying works without an internet connection.
 - Faster downloads for AudioVault, Google Drive and website folders: a file comes down over several connections at once, the same way app updates do. Each source has its own switch in Settings, with what it means for that source. It's on for Google Drive and website folders, and off for AudioVault unless you turn it on, since AudioVault is a small volunteer-run site.
