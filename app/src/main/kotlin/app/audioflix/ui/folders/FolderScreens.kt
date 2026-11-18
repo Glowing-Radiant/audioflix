@@ -40,7 +40,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -99,17 +98,18 @@ fun fileChoice(provider: FolderProvider, id: String, name: String) = AddChoice(
 fun FolderHomeContent(
   provider: FolderProvider,
   saved: List<SavedFolder>,
+  linkText: String,
   busy: Boolean,
   error: String?,
-  onOpenLink: (String) -> Unit,
+  onLinkChange: (String) -> Unit,
+  onOpenLink: () -> Unit,
   onOpenFolder: (SavedFolder) -> Unit,
   onRemoveFolder: (SavedFolder) -> Unit,
 ) {
   val focus = LocalFocusManager.current
-  var link by rememberSaveable(provider.id) { mutableStateOf("") }
   fun submit() {
     focus.clearFocus()
-    onOpenLink(link)
+    onOpenLink()
   }
 
   LazyColumn(Modifier.fillMaxSize()) {
@@ -117,15 +117,17 @@ fun FolderHomeContent(
       Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(provider.linkHelp, style = MaterialTheme.typography.bodyMedium)
         OutlinedTextField(
-          value = link,
-          onValueChange = { link = it },
+          value = linkText,
+          onValueChange = onLinkChange,
           modifier = Modifier.fillMaxWidth(),
           label = { Text(provider.linkLabel) },
           singleLine = true,
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
           keyboardActions = KeyboardActions(onGo = { submit() }),
         )
-        Button(onClick = ::submit, enabled = link.isNotBlank() && !busy) { Text(if (busy) "Opening…" else "Open link") }
+        Button(onClick = ::submit, enabled = linkText.isNotBlank() && !busy) {
+          Text(if (busy) "Opening…" else "Open link")
+        }
         // Announced when opening fails, since focus stays on the button.
         Column(Modifier.semantics { liveRegion = LiveRegionMode.Polite }) {
           error?.let { Text(it, color = MaterialTheme.colorScheme.error) }

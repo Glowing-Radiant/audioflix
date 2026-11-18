@@ -48,8 +48,8 @@ sealed interface BrowseSource {
   }
 }
 
-/** The state of one folder provider's link box. */
-data class LinkState(val busy: Boolean = false, val error: String? = null)
+/** One folder provider's link box: what's typed in it, and what came of opening it. */
+data class LinkState(val text: String = "", val busy: Boolean = false, val error: String? = null)
 
 /** A single file opened from a link, waiting for the user to say stream or download. */
 data class PendingAdd(val provider: FolderProvider, val choice: AddChoice)
@@ -153,25 +153,31 @@ class BrowseViewModel(private val container: AppContainer) : ViewModel() {
    * Opens a pasted link: a folder opens its own screen, a single file asks how to add it. The
    * provider works out which it is, asking the server when the link alone doesn't say.
    */
-  fun openLink(provider: FolderProvider, text: String) {
+  /** Each source keeps its own address, so switching source doesn't lose what was typed. */
+  fun setLinkText(provider: FolderProvider, text: String) {
+    linkStates.getValue(provider.id).update { it.copy(text = text, error = null) }
+  }
+
+  fun openLink(provider: FolderProvider) {
     val state = linkStates.getValue(provider.id)
-    state.value = LinkState(busy = true)
+    val text = state.value.text
+    state.update { it.copy(busy = true, error = null) }
     viewModelScope.launch {
       try {
         when (val target = provider.resolveLink(text)) {
           is LinkTarget.Folder -> {
-            state.value = LinkState()
+            state.update { it.copy(busy = false) }
             _events.send(BrowseEvent.OpenFolder(provider.id, target.id))
           }
           is LinkTarget.File -> {
-            state.value = LinkState()
+            state.update { it.copy(busy = false) }
             _pendingAdd.value = PendingAdd(provider, fileChoice(provider, target.id, target.name))
           }
         }
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
-        state.value = LinkState(error = errorMessage(e))
+        state.update { it.copy(busy = false, error = errorMessage(e)) }
       }
     }
   }

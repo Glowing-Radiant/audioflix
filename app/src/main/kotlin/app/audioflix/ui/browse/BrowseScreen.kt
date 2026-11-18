@@ -131,9 +131,11 @@ fun BrowseScreen(
           FolderHomeContent(
             provider = current.provider,
             saved = saved,
+            linkText = link.text,
             busy = link.busy,
             error = link.error,
-            onOpenLink = { viewModel.openLink(current.provider, it) },
+            onLinkChange = { viewModel.setLinkText(current.provider, it) },
+            onOpenLink = { viewModel.openLink(current.provider) },
             onOpenFolder = { onOpenFolder(current.provider.id, it.id) },
             onRemoveFolder = { viewModel.removeSavedFolder(current.provider, it) },
           )
