@@ -9,6 +9,17 @@ the code changed. `scripts/release.sh` turns Unreleased into the new version's s
 
 ## [Unreleased]
 
+### Added
+- Settings, under App updates, lets you choose how many connections an update downloads over at once, from 1 to 8. More is usually faster; on a weak or patchy network, fewer can be more dependable. It's 6 unless you change it.
+
+### Changed
+- App updates cope better with weak or patchy networks. Each part of the download gets more tries, and if the connection keeps dropping, the download carries on by itself over fewer connections, saying so on the update screen.
+- Every downloaded update is checked before it's installed: its size and fingerprint against what was published, and that Android can read it as the right version of AudioFlix, signed the same way. One that arrived damaged is downloaded again once over a single connection. If Android still can't read it, trying again downloads it afresh instead of reusing the damaged copy.
+
+### Fixed
+- An update download that takes more than an hour no longer fails when the download link expires: AudioFlix gets a new link and carries on.
+- If an update was replaced on the server part way through a download, the two versions could be pieced together. Pieces from a different version are now thrown away.
+
 ## [0.5.0] - 2026-11-19
 
 ### Added

@@ -46,6 +46,20 @@ class Settings(private val prefs: SharedPreferences) {
     _autoRewind.value = value
   }
 
+  private val _updateConnections = MutableStateFlow(
+    prefs.getInt(KEY_UPDATE_CONNECTIONS, UpdateConnections.DEFAULT).let { saved ->
+      saved.takeIf { it in UpdateConnections.CHOICES } ?: UpdateConnections.DEFAULT
+    },
+  )
+
+  /** How many connections an app update downloads over at once. */
+  val updateConnections: StateFlow<Int> = _updateConnections.asStateFlow()
+
+  fun setUpdateConnections(value: Int) {
+    prefs.edit().putInt(KEY_UPDATE_CONNECTIONS, value).apply()
+    _updateConnections.value = value
+  }
+
   /** The latest version the update screen was opened for automatically, so it opens only once. */
   var updatePromptedVersion: String?
     get() = prefs.getString(KEY_UPDATE_PROMPTED, null)
@@ -74,12 +88,19 @@ class Settings(private val prefs: SharedPreferences) {
     const val KEY_SPEED = "player.speed"
     const val KEY_UPDATE_PROMPTED = "updates.promptedVersion"
     const val KEY_UPDATE_PENDING = "updates.pendingVersion"
+    const val KEY_UPDATE_CONNECTIONS = "updates.connections"
     const val KEY_FAST = "downloads.fast."
     const val KEY_REWIND_ON = "player.rewind.enabled"
     const val KEY_REWIND_SHORT = "player.rewind.shortSeconds"
     const val KEY_REWIND_LONG = "player.rewind.longSeconds"
     const val KEY_REWIND_AFTER = "player.rewind.longPauseMinutes"
   }
+}
+
+/** The choices for [Settings.updateConnections]. */
+object UpdateConnections {
+  const val DEFAULT = 6
+  val CHOICES = listOf(1, 2, 4, 6, 8)
 }
 
 /**

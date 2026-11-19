@@ -25,3 +25,12 @@ fun contentRangeStart(header: String?): Long? =
 /** The full size a `Content-Range: bytes 100-199/1000` response gives (1000). */
 fun contentRangeTotal(header: String?): Long? =
   header?.substringAfterLast('/', "")?.trim()?.toLongOrNull()
+
+/** A `Content-Range: bytes 100-199/1000` header in full; [total] is null when the size is unknown. */
+data class ContentRange(val start: Long, val end: Long, val total: Long?)
+
+fun parseContentRange(header: String?): ContentRange? {
+  val match = header?.let { Regex("""bytes\s+(\d+)-(\d+)/(\d+|\*)""").find(it) } ?: return null
+  val (start, end, total) = match.destructured
+  return ContentRange(start.toLongOrNull() ?: return null, end.toLongOrNull() ?: return null, total.toLongOrNull())
+}

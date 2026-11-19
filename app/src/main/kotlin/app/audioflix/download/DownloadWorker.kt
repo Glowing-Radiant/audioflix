@@ -190,7 +190,7 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
       val url = provider.rangedDownloadUrl(fileId)
       if (url != null) {
         try {
-          val name = withProgressTicker(onProgress) { setProgress -> downloader.download(url, part, setProgress) }
+          val name = withProgressTicker(onProgress) { setProgress -> downloader.download(url, part, onProgress = setProgress) }
           return FastResult(name)
         } catch (e: NotTheFileException) {
           // Fall through to the usual download.

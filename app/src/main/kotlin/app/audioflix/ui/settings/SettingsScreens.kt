@@ -58,6 +58,7 @@ import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.audioflix.container
 import app.audioflix.data.AutoRewind
+import app.audioflix.data.UpdateConnections
 import app.audioflix.provider.CatalogProvider
 import app.audioflix.provider.FolderProvider
 import app.audioflix.provider.LoginResult
@@ -66,6 +67,7 @@ import app.audioflix.ui.browse.limitReachedText
 import app.audioflix.ui.browse.remainingText
 import app.audioflix.ui.formatBytes
 import app.audioflix.ui.update.UpdateCheckStatus
+import app.audioflix.update.connectionsText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -279,6 +281,31 @@ private fun UpdateSettings(onOpenUpdate: () -> Unit) {
     }
     if (updateState.checking) CircularProgressIndicator(Modifier.padding(4.dp))
   }
+
+  val connections by container.settings.updateConnections.collectAsStateWithLifecycle()
+  HorizontalDivider()
+  Heading("Downloading updates")
+  DropdownSelector(
+    label = "Download updates over",
+    options = UpdateConnections.CHOICES,
+    selected = connections,
+    optionLabel = { n ->
+      when (n) {
+        1 -> "1 connection, slowest but steadiest"
+        UpdateConnections.DEFAULT -> "${connectionsText(n)} (default)"
+        else -> connectionsText(n)
+      }
+    },
+    onSelect = container.settings::setUpdateConnections,
+    modifier = Modifier.fillMaxWidth(),
+  )
+  Text(
+    "More connections at once usually make updates download faster, but on a weak or patchy " +
+      "network fewer can be more dependable. If a download keeps failing, choose fewer. Whatever you " +
+      "choose, AudioFlix drops to fewer connections by itself when the connection keeps dropping, " +
+      "and checks every update is complete and undamaged before installing it.",
+    style = MaterialTheme.typography.bodySmall,
+  )
 }
 
 /** A source's page: its account, faster downloads, and links to the people behind it. */

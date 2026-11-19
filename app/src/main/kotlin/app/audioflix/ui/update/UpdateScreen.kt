@@ -152,6 +152,9 @@ private fun InstallControls(step: InstallStep, updates: UpdateManager, onLater: 
         style = MaterialTheme.typography.bodyLarge,
         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
       )
+      step.note?.let {
+        Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+      }
       LinearProgressIndicator(
         progress = { step.percent / 100f },
         modifier = Modifier.fillMaxWidth().clearAndSetSemantics { },
