@@ -9,6 +9,8 @@ the code changed. `scripts/release.sh` turns Unreleased into the new version's s
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-19
+
 ### Added
 - Settings, under App updates, lets you choose how many connections an update downloads over at once, from 1 to 8. More is usually faster; on a weak or patchy network, fewer can be more dependable. It's 6 unless you change it.
 
