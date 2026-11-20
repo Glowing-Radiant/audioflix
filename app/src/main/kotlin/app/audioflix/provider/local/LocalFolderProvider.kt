@@ -116,7 +116,7 @@ class LocalFolderProvider(
 
   override fun folderItem(folderId: String, title: String) = CatalogItem(ID, DIR + folderId, title, kind = null)
 
-  override fun fileItem(fileId: String, name: String) =
+  override fun fileItem(fileId: String, name: String, description: String?) =
     CatalogItem(ID, FILE + fileId, name.substringBeforeLast('.').ifBlank { name }, kind = null)
 
   override suspend fun files(remoteId: String): List<RemoteFile> = when {

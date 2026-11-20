@@ -169,7 +169,7 @@ class BrowseViewModel(private val container: AppContainer) : ViewModel() {
           }
           is LinkTarget.File -> {
             state.update { it.copy(busy = false) }
-            _pendingAdd.value = PendingAdd(provider, fileChoice(provider, target.id, target.name))
+            _pendingAdd.value = PendingAdd(provider, fileChoice(provider, target.id, target.name, target.description))
           }
         }
       } catch (e: CancellationException) {

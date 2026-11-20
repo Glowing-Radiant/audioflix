@@ -121,8 +121,10 @@ class WebFolderProvider(
     )
     when (val page = ProfilePages.classify(url)) {
       is ProfilePages.Page.Profile -> return LinkTarget.Folder(WebRef.idOf(page.url))
-      is ProfilePages.Page.Upload ->
-        return LinkTarget.File(WebRef.idOf(page.url), ProfilePages.fileName(readUpload(page).title))
+      is ProfilePages.Page.Upload -> {
+        val audio = readUpload(page)
+        return LinkTarget.File(WebRef.idOf(page.url), ProfilePages.fileName(audio.title), audio.description)
+      }
       null -> {}
     }
     if (url.scheme != "https") throw InvalidLinkException(
@@ -139,8 +141,13 @@ class WebFolderProvider(
   override fun folderItem(folderId: String, title: String) =
     CatalogItem(ID, WebRef.Folder(folderId).remoteId, title, kind = null)
 
-  override fun fileItem(fileId: String, name: String) =
-    CatalogItem(ID, WebRef.File(fileId).remoteId, name.substringBeforeLast('.').ifBlank { name }, kind = null)
+  override fun fileItem(fileId: String, name: String, description: String?) = CatalogItem(
+    ID,
+    WebRef.File(fileId).remoteId,
+    name.substringBeforeLast('.').ifBlank { name },
+    kind = null,
+    description = description,
+  )
 
   override fun folderIdOf(remoteId: String): String? = (WebRef.parse(remoteId) as? WebRef.Folder)?.id
 

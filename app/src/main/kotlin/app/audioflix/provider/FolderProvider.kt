@@ -13,9 +13,16 @@ import kotlinx.serialization.json.Json
 
 /**
  * One entry of a remote folder listing. [label] is what it's called on screen, when that differs
- * from its file [name] (a page of uploads lists titles, not file names).
+ * from its file [name] (a page of uploads lists titles, not file names). [description] is what the
+ * source says about it, when it says anything.
  */
-data class RemoteEntry(val id: String, val name: String, val type: Type, val label: String = name) {
+data class RemoteEntry(
+  val id: String,
+  val name: String,
+  val type: Type,
+  val label: String = name,
+  val description: String? = null,
+) {
   enum class Type {
     FOLDER,
     FILE,
@@ -35,7 +42,7 @@ data class SavedFolder(val id: String, val title: String)
 /** What a link the user pasted points at. */
 sealed interface LinkTarget {
   data class Folder(val id: String) : LinkTarget
-  data class File(val id: String, val name: String) : LinkTarget
+  data class File(val id: String, val name: String, val description: String? = null) : LinkTarget
 }
 
 /** Thrown when pasted text isn't a link this provider can open. */
@@ -91,8 +98,8 @@ interface FolderProvider : CatalogProvider {
   /** The library title a whole folder becomes. */
   fun folderItem(folderId: String, title: String): CatalogItem
 
-  /** The library title a single file becomes. */
-  fun fileItem(fileId: String, name: String): CatalogItem
+  /** The library title a single file becomes, with what the source says about it, if anything. */
+  fun fileItem(fileId: String, name: String, description: String? = null): CatalogItem
 }
 
 /** The saved-folder list of one provider, kept in [prefs] under [key]. */

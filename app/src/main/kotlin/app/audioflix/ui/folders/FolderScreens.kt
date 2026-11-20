@@ -86,8 +86,8 @@ data class AddChoice(val item: CatalogItem, val canStream: Boolean, val isFolder
 fun folderChoice(provider: FolderProvider, id: String, title: String) =
   AddChoice(provider.folderItem(id, title), canStream = true, isFolder = true)
 
-fun fileChoice(provider: FolderProvider, id: String, name: String) = AddChoice(
-  provider.fileItem(id, name),
+fun fileChoice(provider: FolderProvider, id: String, name: String, description: String? = null) = AddChoice(
+  provider.fileItem(id, name, description),
   canStream = !MediaInstaller.isArchiveName(name),
   isFolder = false,
 )
@@ -347,7 +347,7 @@ private fun FolderContent(
     if (files.isNotEmpty()) {
       item(key = "files-heading") { SectionHeading("Files (${files.size})") }
       items(files, key = { "f:${it.id}" }) { entry ->
-        val choice = fileChoice(provider, entry.id, entry.name)
+        val choice = fileChoice(provider, entry.id, entry.name, entry.description)
         val inLibrary = library[choice.item.key]
         EntryRow(
           entry = entry,
@@ -442,6 +442,11 @@ fun AddToLibraryDialog(
     title = { Text("Add ${choice.item.title}") },
     text = {
       Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        choice.item.description?.let {
+          Text("Description", style = MaterialTheme.typography.titleSmall, modifier = Modifier.semantics { heading() })
+          Text(it, style = MaterialTheme.typography.bodyMedium)
+          HorizontalDivider(Modifier.padding(vertical = 4.dp))
+        }
         if (provider.isLocal) {
           if (choice.canStream) {
             Text("Play from folder plays the files where they are, and takes no extra space. If they're moved or deleted, AudioFlix can't play them any more.")

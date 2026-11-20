@@ -25,6 +25,14 @@ class ProfilePagesTest {
     <!DOCTYPE html><html><body>
     <div style="margin:10px 0"><a href="https://soundgasm.net/u/someone">someone</a></div>
     <div class="jp-details"><div class="jp-title" aria-label="title">Verification</div></div>
+    <div class="jp-description">
+        <p style="white-space: pre-wrap;">Line one
+    Line two
+
+
+
+    After a gap</p>
+    </div>
     <script type="text/javascript">
       ${'$'}(document).ready(function(){
         ${'$'}("#jquery_jplayer_1").jPlayer({
@@ -68,6 +76,8 @@ class ProfilePagesTest {
     assertEquals(listOf("[Tag] First one.m4a", "Second.m4a"), folder.entries.map { it.name })
     assertTrue(folder.entries.all { it.type == RemoteEntry.Type.FILE })
     assertEquals("https://soundgasm.net/u/someone/First-One", WebRef.urlOf(folder.entries[0].id).toString())
+    assertEquals("A description", folder.entries[0].description)
+    assertNull(folder.entries[1].description)
   }
 
   @Test
@@ -79,6 +89,7 @@ class ProfilePagesTest {
       "https://media.soundgasm.net/sounds/19efb39a60acd22076b4bc7d95daedcae9734d0e.m4a",
       audio.mediaUrl.toString(),
     )
+    assertEquals("Line one\nLine two\n\nAfter a gap", audio.description)
   }
 
   @Test

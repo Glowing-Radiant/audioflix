@@ -107,7 +107,7 @@ class GoogleDriveProvider(
   override fun folderItem(folderId: String, title: String) =
     CatalogItem(ID, DriveRef.Folder(folderId).remoteId, title, kind = null)
 
-  override fun fileItem(fileId: String, name: String) =
+  override fun fileItem(fileId: String, name: String, description: String?) =
     CatalogItem(ID, DriveRef.File(fileId).remoteId, name.substringBeforeLast('.').ifBlank { name }, kind = null)
 
   override fun folderIdOf(remoteId: String): String? = (DriveRef.parse(remoteId) as? DriveRef.Folder)?.id

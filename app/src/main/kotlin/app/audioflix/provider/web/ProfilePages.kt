@@ -5,6 +5,7 @@ import app.audioflix.provider.RemoteFolder
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Element
 
 /**
  * Sites where each person has a profile page listing their uploads, and each upload has a page of
@@ -31,8 +32,8 @@ object ProfilePages {
     data class Upload(override val url: HttpUrl, override val user: String, val slug: String) : Page
   }
 
-  /** One upload's page, read: what it's called and where its audio is. */
-  data class Audio(val title: String, val mediaUrl: HttpUrl)
+  /** One upload's page, read: what it's called, what it says about itself and where its audio is. */
+  data class Audio(val title: String, val mediaUrl: HttpUrl, val description: String? = null)
 
   /** What [url] is on one of these sites, as an https address; null if it isn't one of their pages. */
   fun classify(url: HttpUrl): Page? {
@@ -53,12 +54,19 @@ object ProfilePages {
     val doc = Jsoup.parse(html, profile.url.toString())
     val entries = mutableListOf<RemoteEntry>()
     val seen = HashSet<String>()
-    for (link in doc.select(".sound-details a[href]")) {
+    for (details in doc.select(".sound-details")) {
       if (entries.size >= MAX_ENTRIES) break
+      val link = details.selectFirst("a[href]") ?: continue
       val upload = link.attr("abs:href").toHttpUrlOrNull()?.let(::classify) as? Page.Upload ?: continue
       if (!seen.add(upload.url.toString())) continue
       val title = link.text().trim().ifBlank { titleFromSlug(upload.slug) }
-      entries += RemoteEntry(WebRef.idOf(upload.url), fileName(title), RemoteEntry.Type.FILE, label = title)
+      entries += RemoteEntry(
+        WebRef.idOf(upload.url),
+        fileName(title),
+        RemoteEntry.Type.FILE,
+        label = title,
+        description = details.selectFirst(".soundDescription")?.let(::descriptionText),
+      )
     }
     return RemoteFolder(WebRef.idOf(profile.url), profile.user, entries)
   }
@@ -72,8 +80,21 @@ object ProfilePages {
     val doc = Jsoup.parse(html, page.url.toString())
     val title = doc.selectFirst(".jp-title")?.text()?.trim()?.takeIf { it.isNotEmpty() }
       ?: titleFromSlug(page.slug)
-    return Audio(title, media)
+    val description = doc.selectFirst(".jp-description")?.let(::descriptionText)
+    return Audio(title, media, description)
   }
+
+  /**
+   * An upload's description as its page shows it: the line breaks its author typed are kept, with
+   * no more than one blank line in a row. Null when there's nothing in it.
+   */
+  private fun descriptionText(element: Element): String? =
+    element.wholeText()
+      .lines()
+      .joinToString("\n") { it.trim() }
+      .replace(Regex("\n{3,}"), "\n\n")
+      .trim()
+      .takeIf { it.isNotEmpty() }
 
   /** The file name an upload called [title] has in AudioFlix, the same whether found on its profile or by its own link. */
   fun fileName(title: String): String = "$title.$AUDIO_EXTENSION"
