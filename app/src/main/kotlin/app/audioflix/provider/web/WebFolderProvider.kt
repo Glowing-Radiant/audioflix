@@ -13,16 +13,24 @@ import app.audioflix.provider.FolderUnavailableException
 import app.audioflix.provider.InvalidLinkException
 import app.audioflix.provider.LinkTarget
 import app.audioflix.provider.MediaKind
+import app.audioflix.provider.RemoteEntry
 import app.audioflix.provider.RemoteFile
 import app.audioflix.provider.RemoteFolder
 import app.audioflix.provider.SavedFolder
 import app.audioflix.provider.SavedFolderStore
 import app.audioflix.provider.collectFolderFiles
+import app.audioflix.provider.uniquePath
 import java.io.IOException
 import java.util.Base64
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -47,8 +55,9 @@ class WebFolderProvider(
   override val linkLabel = "Folder address"
   override val linkHelp =
     "Paste the address of a folder on a website that lists the files in it, like " +
-      "https://example.com/audio/. You can also paste the address of a single audio or zip file. " +
-      "Nothing to sign in to."
+      "https://example.com/audio/. You can also paste the address of a single audio or zip file, " +
+      "or, on some sites where people share recordings, a person's profile page to browse what " +
+      "they've shared, or the page of one recording. Nothing to sign in to."
 
   override val supportsFastDownloads = true
 
@@ -65,13 +74,24 @@ class WebFolderProvider(
 
   override fun removeFolder(folderId: String) = saved.remove(folderId)
 
-  override suspend fun listFolder(folderId: String): RemoteFolder = withContext(Dispatchers.IO) {
-    val url = folderUrl(folderId)
+  override suspend fun listFolder(folderId: String): RemoteFolder {
+    val profile = WebRef.urlOf(folderId)?.let(ProfilePages::classify) as? ProfilePages.Page.Profile
+    if (profile != null) {
+      val (html, _) = fetchPage(profile.url)
+      return ProfilePages.parseProfile(html, profile)
+    }
+    val (html, finalUrl) = fetchPage(folderUrl(folderId))
+    // Parsed against the address we ended up at, so a redirect to the real folder still works.
+    return IndexParser.parse(html, finalUrl)
+  }
+
+  /** The web page at [url] and the address it finally came from. */
+  private suspend fun fetchPage(url: HttpUrl): Pair<String, HttpUrl> = withContext(Dispatchers.IO) {
     val request = Request.Builder().url(url).header("Accept", "text/html,*/*").build()
     client.newCall(request).await().use { response ->
       when {
         response.code == 401 || response.code == 403 -> throw FolderUnavailableException(
-          "${url.host} doesn't let AudioFlix read this folder. It may need a sign-in that AudioFlix can't do.",
+          "${url.host} doesn't let AudioFlix read this page. It may need a sign-in that AudioFlix can't do.",
         )
         response.code == 404 || response.code == 410 ->
           throw FolderUnavailableException("There's nothing at that address any more.")
@@ -83,16 +103,28 @@ class WebFolderProvider(
           "That address isn't a folder listing: ${url.host} sent a file instead of a list of files.",
         )
       }
-      // Parsed against the address we ended up at, so a redirect to the real folder still works.
-      IndexParser.parse(response.body?.string().orEmpty(), response.request.url)
+      response.body?.string().orEmpty() to response.request.url
     }
   }
 
-  /** A folder address, or the address of a single audio file or zip. */
+  /** Reads an upload's page for its title and the address of its audio. */
+  private suspend fun readUpload(page: ProfilePages.Page.Upload): ProfilePages.Audio {
+    val (html, _) = fetchPage(page.url)
+    return ProfilePages.parseUpload(html, page)
+      ?: throw FolderUnavailableException("There's no audio on that page. It may have been removed.")
+  }
+
+  /** A folder address, the address of a single audio file or zip, or a profile or upload page. */
   override suspend fun resolveLink(text: String): LinkTarget {
     val url = parseUrl(text) ?: throw InvalidLinkException(
       "That doesn't look like a web address. It should look like https://example.com/audio/.",
     )
+    when (val page = ProfilePages.classify(url)) {
+      is ProfilePages.Page.Profile -> return LinkTarget.Folder(WebRef.idOf(page.url))
+      is ProfilePages.Page.Upload ->
+        return LinkTarget.File(WebRef.idOf(page.url), ProfilePages.fileName(readUpload(page).title))
+      null -> {}
+    }
     if (url.scheme != "https") throw InvalidLinkException(
       "AudioFlix only opens addresses that start with https://, so what you listen to can't be " +
         "read or changed on the way.",
@@ -116,10 +148,48 @@ class WebFolderProvider(
    * Audio files and zips of a folder title, subfolders included, with paths that mirror the folder
    * layout. A file title is just that file.
    */
-  override suspend fun files(remoteId: String): List<RemoteFile> = when (val ref = WebRef.parse(remoteId)) {
-    is WebRef.Folder -> collectFolderFiles(ref.id, maxDepth = MAX_DEPTH, maxFiles = MAX_FILES)
-    is WebRef.File -> listOf(RemoteFile(ref.id, MediaInstaller.sanitizeFileName(fileName(fileUrl(ref.id)))))
-    null -> throw IllegalArgumentException("Not a website folder title: $remoteId")
+  override suspend fun files(remoteId: String): List<RemoteFile> {
+    val ref = WebRef.parse(remoteId) ?: throw IllegalArgumentException("Not a website folder title: $remoteId")
+    return when (val page = WebRef.urlOf(ref.id)?.let(ProfilePages::classify)) {
+      is ProfilePages.Page.Profile -> profileFiles(page)
+      is ProfilePages.Page.Upload -> {
+        val audio = readUpload(page)
+        listOf(RemoteFile(WebRef.idOf(audio.mediaUrl), MediaInstaller.sanitizeFileName(ProfilePages.fileName(audio.title))))
+      }
+      null -> when (ref) {
+        is WebRef.Folder -> collectFolderFiles(ref.id, maxDepth = MAX_DEPTH, maxFiles = MAX_FILES)
+        is WebRef.File -> listOf(RemoteFile(ref.id, MediaInstaller.sanitizeFileName(fileName(fileUrl(ref.id)))))
+      }
+    }
+  }
+
+  /**
+   * Every upload of a profile, by its audio's address, which means reading each upload's page. An
+   * upload whose page has gone is left out; if they all fail, the first failure is reported.
+   */
+  private suspend fun profileFiles(profile: ProfilePages.Page.Profile): List<RemoteFile> = coroutineScope {
+    val uploads = listFolder(WebRef.idOf(profile.url)).entries
+      .filter { it.type == RemoteEntry.Type.FILE }
+      .take(MAX_FILES)
+    val permits = Semaphore(PAGE_READS)
+    val results = uploads.map { entry ->
+      async {
+        permits.withPermit {
+          runCatching {
+            val page = WebRef.urlOf(entry.id)?.let(ProfilePages::classify) as? ProfilePages.Page.Upload
+              ?: throw IllegalArgumentException("Not an upload page")
+            entry to readUpload(page).mediaUrl
+          }
+        }
+      }
+    }.awaitAll()
+    results.firstOrNull { it.exceptionOrNull() is CancellationException }?.exceptionOrNull()?.let { throw it }
+    val found = results.mapNotNull { it.getOrNull() }
+    if (found.isEmpty()) results.firstNotNullOfOrNull { it.exceptionOrNull() }?.let { throw it }
+    val used = HashSet<String>()
+    found.map { (entry, media) ->
+      RemoteFile(WebRef.idOf(media), uniquePath(MediaInstaller.sanitizeFileName(entry.name), used))
+    }
   }
 
   override fun streamUrl(fileId: String): String? = WebRef.urlOf(fileId)?.toString()
@@ -191,6 +261,9 @@ class WebFolderProvider(
     private const val KEY_SAVED = "web.savedFolders"
     private const val MAX_DEPTH = 6
     private const val MAX_FILES = 2_000
+
+    /** How many upload pages of a profile are read at once. */
+    private const val PAGE_READS = 4
   }
 }
 

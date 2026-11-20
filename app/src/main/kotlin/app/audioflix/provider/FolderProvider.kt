@@ -11,8 +11,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
-/** One entry of a remote folder listing. */
-data class RemoteEntry(val id: String, val name: String, val type: Type) {
+/**
+ * One entry of a remote folder listing. [label] is what it's called on screen, when that differs
+ * from its file [name] (a page of uploads lists titles, not file names).
+ */
+data class RemoteEntry(val id: String, val name: String, val type: Type, val label: String = name) {
   enum class Type {
     FOLDER,
     FILE,

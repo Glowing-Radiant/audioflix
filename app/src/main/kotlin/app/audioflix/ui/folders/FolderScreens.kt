@@ -419,7 +419,7 @@ private fun EntryRow(
         contentDescription = null,
       )
     },
-    headlineContent = { Text(entry.name) },
+    headlineContent = { Text(entry.label) },
     supportingContent = {
       Text(listOfNotNull(typeLabel, inLibrary?.let(::libraryStatusLabel)).joinToString(", "))
     },
