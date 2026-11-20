@@ -9,6 +9,8 @@ the code changed. `scripts/release.sh` turns Unreleased into the new version's s
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-20
+
 ### Added
 - Recordings from the newer kinds of website sources show their description: when you choose whether to stream or download one, and on its page in your library once it's added.
 
