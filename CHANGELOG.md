@@ -9,6 +9,8 @@ the code changed. `scripts/release.sh` turns Unreleased into the new version's s
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-20
+
 ### Added
 - More kinds of websites work as a website source. On some sites where people share recordings, paste a person's profile page to browse everything they've shared and add it all as one title, or paste the page of one recording to stream it or download it.
 
